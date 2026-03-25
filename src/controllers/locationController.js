@@ -27,15 +27,18 @@ const parseTime = (timeStr) => {
 
 export const addLocation = async (c) => {
   try {
+    const uri = c.env.MONGODB_URI;
     const { mobile, lat, long } = await c.req.json();
 
     const today = new Date();
-    const date = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
+    const dateStr = today.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const date = dateStr.replace(/-/g, '');
 
     const time = today.toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
-      hour12: true
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
     });
 
     const newEntry = {
@@ -45,19 +48,19 @@ export const addLocation = async (c) => {
       isLatest: true
     };
 
-    const existing = await withDatabase(process.env.MONGODB_URI, async (db) => {
+    const existing = await withDatabase(uri, async (db) => {
       return await db.collection("locations").findOne({ mobile: mobile });
     });
 
     if (!existing) {
-      await withDatabase(process.env.MONGODB_URI, async (db) => {
+      await withDatabase(uri, async (db) => {
         await db.collection("locations").insertOne({
           mobile: mobile,
           [date]: [newEntry]
         });
       });
     } else {
-      await withDatabase(process.env.MONGODB_URI, async (db) => {
+      await withDatabase(uri, async (db) => {
         await db.collection("locations").updateOne(
           { mobile: mobile },
           { $push: { [date]: { ...newEntry, isLatest: false } } }
@@ -97,9 +100,10 @@ export const addLocation = async (c) => {
 
 export const getLocationByTime = async (c) => {
   try {
+    const uri = c.env.MONGODB_URI;
     const { mobiles, startTime, endTime, date } = await c.req.json();
 
-    const docs = await withDatabase(process.env.MONGODB_URI, async (db) => {
+    const docs = await withDatabase(uri, async (db) => {
       return await db.collection("locations").find({ mobile: { $in: mobiles } }).toArray();
     });
 
@@ -127,12 +131,14 @@ export const getLocationByTime = async (c) => {
 
 export const getCurrentLocation = async (c) => {
   try {
+    const uri = c.env.MONGODB_URI;
     const { mobiles } = await c.req.json();
 
     const today = new Date();
-    const date = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
+    const dateStr = today.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const date = dateStr.replace(/-/g, '');
 
-    const docs = await withDatabase(process.env.MONGODB_URI, async (db) => {
+    const docs = await withDatabase(uri, async (db) => {
       return await db.collection("locations").find({ mobile: { $in: mobiles } }).toArray();
     });
 

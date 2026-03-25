@@ -19,9 +19,10 @@ const withDatabase = async (uri, fn) => {
 
 export const addUser = async (c) => {
   try {
+    const uri = c.env.MONGODB_URI;
     const { firstName, lastName, mobile, address, feedback, ebData } = await c.req.json();
 
-    const existing = await withDatabase(process.env.MONGODB_URI, async (db) => {
+    const existing = await withDatabase(uri, async (db) => {
       return await db.collection("forms").findOne({ mobile: mobile });
     });
 
@@ -29,7 +30,7 @@ export const addUser = async (c) => {
       return c.json({ error: "Mobile number already registered!" }, 400);
     }
 
-    await withDatabase(process.env.MONGODB_URI, async (db) => {
+    await withDatabase(uri, async (db) => {
       await db.collection("forms").insertOne({
         firstName,
         lastName,
@@ -49,9 +50,10 @@ export const addUser = async (c) => {
 
 export const updateUser = async (c) => {
   try {
+    const uri = c.env.MONGODB_URI;
     const { mobile, firstName, lastName, address, feedback, ebData } = await c.req.json();
 
-    const existing = await withDatabase(process.env.MONGODB_URI, async (db) => {
+    const existing = await withDatabase(uri, async (db) => {
       return await db.collection("forms").findOne({ mobile: mobile });
     });
 
@@ -59,7 +61,7 @@ export const updateUser = async (c) => {
       return c.json({ error: "Mobile number not found!" }, 404);
     }
 
-    await withDatabase(process.env.MONGODB_URI, async (db) => {
+    await withDatabase(uri, async (db) => {
       await db.collection("forms").updateOne(
         { mobile: mobile },
         { $set: { firstName, lastName, address, feedback, ebData } }
