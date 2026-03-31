@@ -25,21 +25,36 @@ const parseTime = (timeStr) => {
   return hours * 60 + minutes;
 };
 
+// ✅ converts epoch to date and time
+const epochToDateTime = (epoch) => {
+  const d = new Date(epoch);
+
+  const date = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+                .replace(/-/g, ''); 
+
+  const time = d.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'Asia/Kolkata'
+  });  
+
+  return { date, time };
+};
+
 export const addLocation = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
-    const { phoneNo, latitude, longitude } = await c.req.json();
 
-    const today = new Date();
-    const dateStr = today.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const date = dateStr.replace(/-/g, '');
+  
+    const { phoneNo, latitude, longitude, epoch } = await c.req.json();
 
-    const time = today.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-      timeZone: 'Asia/Kolkata'
-    });
+    if (!phoneNo || !latitude || !longitude || !epoch) {
+      return c.json({ error: "phoneNo, latitude, longitude and epoch are required!" }, 400);
+    }
+
+   
+    const { date, time } = epochToDateTime(epoch);  //epoch-convert//
 
     const newEntry = {
       time: time,
@@ -97,7 +112,17 @@ export const addLocation = async (c) => {
 export const getLocationByTime = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
-    const { mobiles, startTime, endTime, date } = await c.req.json();
+
+    // ✅ receive epoch for start and end time
+    const { mobiles, startEpoch, endEpoch } = await c.req.json();
+
+    if (!mobiles || !startEpoch || !endEpoch) {
+      return c.json({ error: "mobiles, startEpoch and endEpoch are required!" }, 400);
+    }
+
+    // ✅ convert epochs to date and time
+    const { date, time: startTime } = epochToDateTime(startEpoch);
+    const { time: endTime } = epochToDateTime(endEpoch);
 
     const docs = await withDatabase(uri, async (db) => {
       return await db.collection("locations").find({ phoneNo: { $in: mobiles } }).toArray();
@@ -128,11 +153,16 @@ export const getLocationByTime = async (c) => {
 export const getCurrentLocation = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
-    const { mobiles } = await c.req.json();
 
-    const today = new Date();
-    const dateStr = today.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const date = dateStr.replace(/-/g, '');
+    // ✅ receive epoch for date
+    const { mobiles, epoch } = await c.req.json();
+
+    if (!mobiles || !epoch) {
+      return c.json({ error: "mobiles and epoch are required!" }, 400);
+    }
+
+    // ✅ convert epoch to date
+    const { date } = epochToDateTime(epoch);
 
     const docs = await withDatabase(uri, async (db) => {
       return await db.collection("locations").find({ phoneNo: { $in: mobiles } }).toArray();

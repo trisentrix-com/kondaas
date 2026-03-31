@@ -1,5 +1,7 @@
 import { MongoClient } from 'mongodb';
 
+// No Zod import needed anymore
+
 const withDatabase = async (uri, fn) => {
   const client = new MongoClient(uri, {
     maxPoolSize: 1,
@@ -20,43 +22,31 @@ const withDatabase = async (uri, fn) => {
 export const addForm = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
-    const {
-      mobileNumber: topLevelMobile,
-      customerDetails,
-      customerRequirements,
-      safetyAndInstallation,
-      cableRequirements,
-      collectedDocumentChecklist,
-      paymentDetails,
-      remarks,
-      signatures
-    } = await c.req.json();
+    const body = await c.req.json();
 
-    const mobileNumber = topLevelMobile || customerDetails?.mobileNumber;
+    const mobileNumber = body.mobileNumber || body.customerDetails?.mobileNumber;
 
     if (!mobileNumber) {
       return c.json({ error: "Mobile number is required!" }, 400);
     }
 
+  
+    let alreadyExists = false;
     await withDatabase(uri, async (db) => {
-      const existing = await db.collection("forms").findOne({ mobileNumber: mobileNumber });
-
+      const existing = await db.collection("forms").findOne({ mobileNumber });
       if (existing) {
-        return c.json({ error: "Mobile number already registered!" }, 400);
+        alreadyExists = true;
+        return;
       }
-
       await db.collection("forms").insertOne({
         mobileNumber,
-        customerDetails,
-        customerRequirements,
-        safetyAndInstallation,
-        cableRequirements,
-        collectedDocumentChecklist,
-        paymentDetails,
-        remarks,
-        signatures
+        ...body
       });
     });
+
+    if (alreadyExists) {
+      return c.json({ error: "Mobile number already registered!" }, 400);
+    }
 
     return c.json({ message: "Form submitted successfully!" }, 201);
 
@@ -68,41 +58,31 @@ export const addForm = async (c) => {
 export const updateForm = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
-    const {
-      mobileNumber,
-      customerDetails,
-      customerRequirements,
-      safetyAndInstallation,
-      cableRequirements,
-      collectedDocumentChecklist,
-      paymentDetails,
-      remarks,
-      signatures
-    } = await c.req.json();
+    const body = await c.req.json();
+    const mobileNumber = body.mobileNumber;
 
+   
+    let notFound = false;
     await withDatabase(uri, async (db) => {
-      const existing = await db.collection("forms").findOne({ mobileNumber: mobileNumber });
-
+      const existing = await db.collection("forms").findOne({ mobileNumber });
       if (!existing) {
-        return c.json({ error: "Mobile number not found!" }, 404);
+        notFound = true;
+        return;
       }
-
       await db.collection("forms").updateOne(
-        { mobileNumber: mobileNumber },
+        { mobileNumber },
         {
           $set: {
-            customerDetails,
-            customerRequirements,
-            safetyAndInstallation,
-            cableRequirements,
-            collectedDocumentChecklist,
-            paymentDetails,
-            remarks,
-            signatures
+            ...body,
+            updatedAt: new Date(),
           }
         }
       );
     });
+
+    if (notFound) {
+      return c.json({ error: "Mobile number not found!" }, 404);
+    }
 
     return c.json({ message: "Form updated successfully!" });
 
@@ -116,24 +96,26 @@ export const updateMobileNumber = async (c) => {
     const uri = c.env.MONGODB_URI;
     const { oldMobileNumber, newMobileNumber } = await c.req.json();
 
+    if (!oldMobileNumber || !newMobileNumber) {
+      return c.json({ error: "Both old and new mobile numbers are required" }, 400);
+    }
+
+    let result = null;
     await withDatabase(uri, async (db) => {
-      const oldExisting = await db.collection("forms").findOne({ mobileNumber: oldMobileNumber });
+      const oldExists = await db.collection("forms").findOne({ mobileNumber: oldMobileNumber });
+      if (!oldExists) { result = 'not_found'; return; }
 
-      if (!oldExisting) {
-        return c.json({ error: "Old mobile number not found!" }, 404);
-      }
-
-      const newExisting = await db.collection("forms").findOne({ mobileNumber: newMobileNumber });
-
-      if (newExisting) {
-        return c.json({ error: "New mobile number already registered!" }, 400);
-      }
+      const newExists = await db.collection("forms").findOne({ mobileNumber: newMobileNumber });
+      if (newExists) { result = 'already_taken'; return; }
 
       await db.collection("forms").updateOne(
         { mobileNumber: oldMobileNumber },
         { $set: { mobileNumber: newMobileNumber } }
       );
     });
+
+    if (result === 'not_found') return c.json({ error: "Old mobile number not found!" }, 404);
+    if (result === 'already_taken') return c.json({ error: "New mobile number already registered!" }, 400);
 
     return c.json({ message: "Mobile number updated successfully!" });
 

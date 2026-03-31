@@ -20,23 +20,27 @@ const withDatabase = async (uri, fn) => {
 export const addOrder = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
-    const { name, mobile, whatsappNo, email, city, comment, referredBy,latitude,longitude } = await c.req.json();
+    const { name, mobile, whatsappNo, email, city, comment, referredBy, latitude, longitude } = await c.req.json();
 
-    const today = new Date();
-    const createdAt = today.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    // ✅ only check if whatsappNo is provided
+    if (whatsappNo && whatsappNo !== mobile) {
+      return c.json({ error: "WhatsApp number must be the same as mobile number!" }, 400);
+    }
+
+
 
     await withDatabase(uri, async (db) => {
-      await db.collection("users").insertOne({
+      await db.collection("order").insertOne({
         name,
         mobile,
-        whatsappNo,
-        email,
+        whatsappNo: whatsappNo || null, 
+        email: email || null,
         city,
         comment,
         referredBy,
         latitude,
         longitude,
-        createdAt
+
       });
     });
 
@@ -48,13 +52,12 @@ export const addOrder = async (c) => {
 };
 
 
-
 export const getOrders = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
 
     const orders = await withDatabase(uri, async (db) => {
-      return await db.collection("users").find({}).toArray();
+      return await db.collection("order").find({}).toArray();
     });
 
     return c.json(orders);
