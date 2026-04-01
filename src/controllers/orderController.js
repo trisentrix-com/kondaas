@@ -20,31 +20,109 @@ const withDatabase = async (uri, fn) => {
 export const addOrder = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
-    const { name, mobile, whatsappNo, email, city, comment, referredBy, latitude, longitude } = await c.req.json();
+    const { name, mobile, whatsappNo, email, city, comment, referredBy, latitude, longitude, address } = await c.req.json();
 
-    // ✅ only check if whatsappNo is provided
     if (whatsappNo && whatsappNo !== mobile) {
       return c.json({ error: "WhatsApp number must be the same as mobile number!" }, 400);
     }
-
-
+    if (!address && (!latitude || !longitude)) {
+      return c.json({ error: "Either address or latitude and longitude must be provided!" }, 400);
+    }
 
     await withDatabase(uri, async (db) => {
       await db.collection("order").insertOne({
         name,
         mobile,
-        whatsappNo: whatsappNo || null, 
+        whatsappNo: whatsappNo || null,
         email: email || null,
         city,
         comment,
         referredBy,
-        latitude,
-        longitude,
-
+        latitude: latitude || null,
+        longitude: longitude || null,
+        address: address || null,
+        status: "unassigned"
       });
     });
 
     return c.json({ message: "Order added successfully!" }, 201);
+
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+};
+
+export const updateOrder = async (c) => {
+  try {
+    const uri = c.env.MONGODB_URI;
+    const { mobile, name, whatsappNo, email, city, comment, referredBy, latitude, longitude, address } = await c.req.json();
+
+    const existing = await withDatabase(uri, async (db) => {
+      return await db.collection("order").findOne({ mobile: mobile });
+    });
+
+    if (!existing) {
+      return c.json({ error: "Order not found!" }, 404);
+    }
+
+    if (whatsappNo && whatsappNo !== mobile) {
+      return c.json({ error: "WhatsApp number must be the same as mobile number!" }, 400);
+    }
+
+    if (!address && (!latitude || !longitude)) {
+      return c.json({ error: "Either address or latitude and longitude must be provided!" }, 400);
+    }
+
+    await withDatabase(uri, async (db) => {
+      await db.collection("order").updateOne(
+        { mobile: mobile },
+        { $set: {
+          name,
+          whatsappNo: whatsappNo || null,
+          email: email || null,
+          city,
+          comment,
+          referredBy,
+          latitude: latitude || null,
+          longitude: longitude || null,
+          address: address || null
+        }}
+      );
+    });
+
+    return c.json({ message: "Order updated successfully!" });
+
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+};
+
+export const updateOrderStatus = async (c) => {
+  try {
+    const uri = c.env.MONGODB_URI;
+    const { mobile, status } = await c.req.json();
+
+    const allowedStatuses = ["assigned", "inprogress"];
+    if (!allowedStatuses.includes(status)) {
+      return c.json({ error: "Invalid status! Allowed values are: assigned, inprogress" }, 400);
+    }
+
+    const existing = await withDatabase(uri, async (db) => {
+      return await db.collection("order").findOne({ mobile: mobile });
+    });
+
+    if (!existing) {
+      return c.json({ error: "Order not found!" }, 404);
+    }
+
+    await withDatabase(uri, async (db) => {
+      await db.collection("order").updateOne(
+        { mobile: mobile },
+        { $set: { status: status } }
+      );
+    });
+
+    return c.json({ message: `Order status updated to ${status} successfully!` });
 
   } catch (err) {
     return c.json({ error: err.message }, 500);
@@ -57,7 +135,7 @@ export const getOrders = async (c) => {
     const uri = c.env.MONGODB_URI;
 
     const orders = await withDatabase(uri, async (db) => {
-      return await db.collection("order").find({}).toArray();
+      return await db.collection("order").find({ status: "unassigned" }).toArray();
     });
 
     return c.json(orders);
