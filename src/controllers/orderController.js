@@ -30,7 +30,7 @@ export const addOrder = async (c) => {
     }
 
     await withDatabase(uri, async (db) => {
-      await db.collection("order").insertOne({
+      await db.collection("lead").insertOne({
         name,
         mobile,
         whatsappNo: whatsappNo || null,
@@ -58,7 +58,7 @@ export const updateOrder = async (c) => {
     const { mobile, name, whatsappNo, email, city, comment, referredBy, latitude, longitude, address } = await c.req.json();
 
     const existing = await withDatabase(uri, async (db) => {
-      return await db.collection("order").findOne({ mobile: mobile });
+      return await db.collection("lead").findOne({ mobile: mobile });
     });
 
     if (!existing) {
@@ -74,19 +74,21 @@ export const updateOrder = async (c) => {
     }
 
     await withDatabase(uri, async (db) => {
-      await db.collection("order").updateOne(
+      await db.collection("lead").updateOne(
         { mobile: mobile },
-        { $set: {
-          name,
-          whatsappNo: whatsappNo || null,
-          email: email || null,
-          city,
-          comment,
-          referredBy,
-          latitude: latitude || null,
-          longitude: longitude || null,
-          address: address || null
-        }}
+        {
+          $set: {
+            name,
+            whatsappNo: whatsappNo || null,
+            email: email || null,
+            city,
+            comment,
+            referredBy,
+            latitude: latitude || null,
+            longitude: longitude || null,
+            address: address || null
+          }
+        }
       );
     });
 
@@ -102,13 +104,13 @@ export const updateOrderStatus = async (c) => {
     const uri = c.env.MONGODB_URI;
     const { mobile, status } = await c.req.json();
 
-    const allowedStatuses = ["assigned", "inprogress"];
+    const allowedStatuses = ["accepted", "inprogress"];
     if (!allowedStatuses.includes(status)) {
       return c.json({ error: "Invalid status! Allowed values are: assigned, inprogress" }, 400);
     }
 
     const existing = await withDatabase(uri, async (db) => {
-      return await db.collection("order").findOne({ mobile: mobile });
+      return await db.collection("lead").findOne({ mobile: mobile });
     });
 
     if (!existing) {
@@ -116,7 +118,7 @@ export const updateOrderStatus = async (c) => {
     }
 
     await withDatabase(uri, async (db) => {
-      await db.collection("order").updateOne(
+      await db.collection("lead").updateOne(
         { mobile: mobile },
         { $set: { status: status } }
       );
@@ -129,13 +131,12 @@ export const updateOrderStatus = async (c) => {
   }
 };
 
-
 export const getOrders = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
 
     const orders = await withDatabase(uri, async (db) => {
-      return await db.collection("order").find({ status: "unassigned" }).toArray();
+      return await db.collection("lead").find({}).toArray();
     });
 
     return c.json(orders);
