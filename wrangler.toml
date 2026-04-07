@@ -1,4 +1,4 @@
 name = "kondaas-api"
 main = "index.js"
-compatibility_date = "2026-03-25"
+compatibility_date = "2026-04-07"   
 compatibility_flags = ["nodejs_compat"]

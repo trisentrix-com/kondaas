@@ -27,17 +27,19 @@ const parseTime = (timeStr) => {
 
 // ✅ converts epoch to date and time
 const epochToDateTime = (epoch) => {
-  const d = new Date(epoch);
+  const IST_OFFSET = 5.5 * 60 * 60 * 1000; // IST = UTC + 5:30
+  const istDate = new Date(epoch + IST_OFFSET);
 
-  const date = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
-                .replace(/-/g, ''); 
+  const year = istDate.getUTCFullYear();
+  const month = String(istDate.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(istDate.getUTCDate()).padStart(2, '0');
+  const date = `${year}${month}${day}`; // → "20260406"
 
-  const time = d.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-    timeZone: 'Asia/Kolkata'
-  });  
+  let hours = istDate.getUTCHours();
+  const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
+  const modifier = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  const time = `${String(hours).padStart(2, '0')}:${minutes} ${modifier}`; // → "11:20 AM"
 
   return { date, time };
 };
@@ -112,17 +114,11 @@ export const addLocation = async (c) => {
 export const getLocationByTime = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
+    const { mobiles, date, startTime, endTime } = await c.req.json();
 
-    // ✅ receive epoch for start and end time
-    const { mobiles, startEpoch, endEpoch } = await c.req.json();
-
-    if (!mobiles || !startEpoch || !endEpoch) {
-      return c.json({ error: "mobiles, startEpoch and endEpoch are required!" }, 400);
+    if (!mobiles || !date || !startTime || !endTime) {
+      return c.json({ error: "mobiles, date, startTime and endTime are required!" }, 400);
     }
-
-    // ✅ convert epochs to date and time
-    const { date, time: startTime } = epochToDateTime(startEpoch);
-    const { time: endTime } = epochToDateTime(endEpoch);
 
     const docs = await withDatabase(uri, async (db) => {
       return await db.collection("locations").find({ phoneNo: { $in: mobiles } }).toArray();
@@ -153,16 +149,19 @@ export const getLocationByTime = async (c) => {
 export const getCurrentLocation = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
+    const { mobiles } = await c.req.json();
 
-    // ✅ receive epoch for date
-    const { mobiles, epoch } = await c.req.json();
-
-    if (!mobiles || !epoch) {
-      return c.json({ error: "mobiles and epoch are required!" }, 400);
+    if (!mobiles) {
+      return c.json({ error: "mobiles is required!" }, 400);
     }
 
-    // ✅ convert epoch to date
-    const { date } = epochToDateTime(epoch);
+    // ✅ backend calculates today's date automatically
+    const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+    const istDate = new Date(Date.now() + IST_OFFSET);
+    const year = istDate.getUTCFullYear();
+    const month = String(istDate.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(istDate.getUTCDate()).padStart(2, '0');
+    const date = `${year}${month}${day}`;
 
     const docs = await withDatabase(uri, async (db) => {
       return await db.collection("locations").find({ phoneNo: { $in: mobiles } }).toArray();
