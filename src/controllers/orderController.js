@@ -219,31 +219,35 @@ export const rejectOrder = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
     const boardToken = c.env.BOARD_API_TOKEN;
-    const { mobile, reason } = await c.req.json();
+    
+    // 1. Updated request body to use surveyorNumber
+    const { mobile, reason, surveyorNumber } = await c.req.json();
 
-    if (!mobile || !reason) {
-      return c.json({ error: "Mobile and reason are required" }, 400);
+    if (!mobile || !reason || !surveyorNumber) {
+      return c.json({ error: "Customer mobile, reason, and surveyor number are required" }, 400);
     }
 
     return await withDatabase(uri, async (db) => {
-      // 1. Just FETCH the Lead details to get the Name (No update)
+      // 2. Fetch the Lead details
       const lead = await db.collection("lead").findOne({ mobile });
       
       if (!lead) return c.json({ error: "Lead not found in local DB" }, 404);
 
       const customerName = lead.name || "Unknown";
 
-      // 2. Prepare Board API Payload
+      // 3. Prepare Board API Payload
       const boardUrl = "https://board.trisentrix.com/api/boards/MdwEaR2BjBaFJcG6P/lists/Lv8QCE5vvBn4H7XRz/cards";
       
       const payload = {
         authorId: "na9Foqu5XL6YfX2kv", 
         swimlaneId: "fxPfDfFn9wArHSp6M",
-        title: `${customerName} - ${mobile}`,
-        description: `Reject Reason: ${reason}\n Phone: ${mobile}\n Name: ${customerName}`
+        // Updated title with Surveyor info
+        title: `${customerName} - ${mobile} (Surveyor: ${surveyorNumber})`,
+        // Updated description with Surveyor info
+        description: `Reject Reason: ${reason}\n Customer Phone: ${mobile}\n Customer Name: ${customerName}\n Rejected By (Surveyor): ${surveyorNumber}`
       };
 
-      // 3. Post to External Board
+      // 4. Post to External Board
       const boardResponse = await fetch(boardUrl, {
         method: "POST",
         headers: {
