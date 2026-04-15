@@ -1,6 +1,8 @@
 import { MongoClient, Binary, ObjectId } from 'mongodb';
 
-// --- HELPER: Database Connection ---
+import { getSystemKeys } from '../utils/config.js';
+
+// --- HELPER: Database Connection (Kept exactly as requested) ---
 const withDatabase = async (uri, fn) => {
   const client = new MongoClient(uri, {
     maxPoolSize: 1,
@@ -18,12 +20,15 @@ const withDatabase = async (uri, fn) => {
 // --- THE WORKER: Background WhatsApp Process ---
 const processWhatsAppNotification = async (notificationId, c) => {
   const uri = c.env.MONGODB_URI;
-  const BASE_URL = c.env.WHATSAPP_API_URL; // Value: https://team.trisentrix.com/message/
-  const API_KEY = c.env.WHATSAPP_API_KEY;
 
   try {
     await withDatabase(uri, async (db) => {
-      // 1. CLAIM: Lock the notification
+      // 1. Fetch the keys from the config collection first
+      const keys = await getSystemKeys(db);
+      const BASE_URL = keys.whatsapp.apiUrl;
+      const API_KEY = keys.whatsapp.apiKey;
+
+      // 2. CLAIM: Lock the notification
       const notification = await db.collection("notifications").findOneAndUpdate(
         { _id: notificationId, status: "pending" },
         { $set: { status: "processing", startedAt: new Date() } },
@@ -40,67 +45,31 @@ const processWhatsAppNotification = async (notificationId, c) => {
       let payload = { number: formattedNumber };
 
       if (type === "text") {
-        // 1. We define the endpoint (Note: Change this to sendText)
         action = "sendText/trisentrix";
-
-        // 2. THIS IS THE DECODING STEP
-        // It takes the binary buffer and turns it into readable words
         payload.text = buffer.toString('utf8');
       }
-
       else if (type === "pdf") {
-
         action = "sendMedia/trisentrix";
-
-
-
-        // Decodes the URL string from the stored buffer
-
         const fileUrl = buffer.toString('utf8');
-
-
-
         payload = {
-
           number: formattedNumber,
-
           mediatype: "document",
-
           media: fileUrl,
-
-          fileName: "Kondaas_Report.pdf", // You can make this dynamic later
-
+          fileName: "Kondaas_Report.pdf",
           caption: "Your document from Kondaas is ready."
-
         };
-
       }
-
       else if (type === "audio") {
-
         action = "sendMedia/trisentrix";
-
-
-
-        // We will treat the content as a URL for this test
-
         const audioUrl = buffer.toString('utf8');
-
-
-
         payload = {
-
           number: formattedNumber,
-
-          mediatype: "audio",      // Changed to 'audio'
-
-          media: audioUrl,         // The link to the .mp3 or .ogg file
-
+          mediatype: "audio",
+          media: audioUrl,
         };
-        // Note: Evolution API usually doesn't use fileName/caption for audio 
-        // as it displays as a player in WhatsApp.
       }
-      // 3. SEND: Dynamic URL construction
+
+      // 3. SEND: Using the keys we pulled from the DB
       const response = await fetch(`${BASE_URL}${action}`, {
         method: "POST",
         headers: {
@@ -165,36 +134,33 @@ export const addNotification = async (c) => {
     return c.json({ error: err.message }, 500);
   }
 };
+
 // --- THE BRIDGE: Automated Scenario Notification ---
 export const triggerScenarioNotification = async (c) => {
   try {
     const uri = c.env.MONGODB_URI;
-    const { customerMobile, scenarioType } = await c.req.json();
+    const { surveyorNumber, customerMobile, scenarioType } = await c.req.json();
 
     return await withDatabase(uri, async (db) => {
-      // 1. Fetch Lead
       const lead = await db.collection("lead").findOne({ mobile: customerMobile });
       if (!lead) return c.json({ error: "Lead not found" }, 404);
 
       const customerName = lead.name || "Customer";
       const whatsappTo = lead.whatsappNo || lead.mobile;
-      
-      // 2. Prepare the Scenario Message
+
       let messageText = "";
       if (scenarioType === 1) {
-        messageText = `Hello ${customerName}, your Kondaas technician has started from the office.`;
+        messageText = `Hello ${customerName}, your Kondaas technician has started from the office and this is his contact number ${surveyorNumber}.`;
       } else if (scenarioType === 2) {
         messageText = `Hello ${customerName}, your technician is just 300 meters away!`;
       } else if (scenarioType === 3) {
         messageText = `Hello ${customerName}, your technician has arrived.`;
       }
 
-      // 3. Automation Step: Convert text to Base64 (Matching your manual tests)
       const base64Content = Buffer.from(messageText).toString('base64');
 
-      // 4. Create Notification Entry (Exactly like addNotification does)
       const notificationResult = await db.collection("notifications").insertOne({
-        from: "7305165859", // Your main Evolution API number
+        from: "Kondaas_System",
         to: whatsappTo,
         mode: "whatsapp",
         content: new Binary(Buffer.from(base64Content, 'base64')),
@@ -204,19 +170,17 @@ export const triggerScenarioNotification = async (c) => {
         createdAt: new Date()
       });
 
-      // 5. Fire the Worker
       c.executionCtx.waitUntil(processWhatsAppNotification(notificationResult.insertedId, c));
 
-      return c.json({ 
-        message: `Scenario ${scenarioType} queued for ${customerName}`, 
-        id: notificationResult.insertedId 
+      return c.json({
+        message: `Scenario ${scenarioType} queued for ${customerName}`,
+        id: notificationResult.insertedId
       });
     });
   } catch (err) {
     return c.json({ error: err.message }, 500);
   }
 };
-
 
 
 

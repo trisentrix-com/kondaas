@@ -5,7 +5,7 @@ import userRoutes from './src/routes/userRoutes.js';
 import orderRoutes from './src/routes/orderRoutes.js';
 import templateRoutes from './src/routes/templateRoutes.js';
 import notificationRoutes from './src/routes/notificationRoutes.js';
-
+import solarmanRoutes from './src/routes/solarmanRoutes.js';
 
 
 const app = new Hono();
@@ -16,7 +16,10 @@ app.use('*', cors());
 
 app.route('/location', locationRoutes);
 app.route('/user', userRoutes);
-app.route('/order',orderRoutes);
+app.route('/order', orderRoutes);
 app.route('/template', templateRoutes);
 app.route('/notification', notificationRoutes);
+app.route('/solarman', solarmanRoutes);
+
+
 export default app; 
