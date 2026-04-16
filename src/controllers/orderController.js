@@ -40,7 +40,7 @@ function getTodayDate() {
 }
 
 // --- UPDATED: Takes bearerToken as an argument now ---
-const sendFCMNotification = async (deviceToken, customerData, distance, bearerToken) => {
+const sendFCMNotification = async (deviceToken, customerData, distance, bearerToken, leadId) => {
   try {
     if (!bearerToken || !deviceToken) return false;
 
@@ -50,20 +50,34 @@ const sendFCMNotification = async (deviceToken, customerData, distance, bearerTo
       message: {
         token: deviceToken,
         notification: {
-          title: "New Order Nearby!",
-          body: `A customer is ${distStr} km away from you. Tap to accept.`
+          title: "New Lead Nearby!",
+          body: `A customer is ${distStr} km away. Tap to accept.`
         },
         android: {
           notification: {
             sound: "kondaas",
-            channel_id: "custom_sound_channel_v2"
-          }
+            channel_id: "custom_sound_channel_v2",
+            click_action: "LEAD_NOTIFICATION_ACTION" 
+          },
+          // ✅ Action buttons for the notification drawer
+          actions: [
+            {
+              action: "ACTION_ACCEPT",
+              title: "✅ Accept"
+            },
+            {
+              action: "ACTION_REJECT",
+              title: "❌ Reject"
+            }
+          ]
         },
         data: {
           type: "new_order",
           customerName: String(customerData.name || "New Customer"),
           distance: distStr,
-          customerMobile: String(customerData.mobile || "")
+          customerMobile: String(customerData.mobile || ""),
+          // ✅ Critical: Pass the leadId so the app knows which record to update
+          leadId: leadId ? leadId.toString() : ""
         }
       }
     };
@@ -86,7 +100,7 @@ const sendFCMNotification = async (deviceToken, customerData, distance, bearerTo
 
 export const addOrder = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+   const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
     const body = await c.req.json();
 
     const {
@@ -142,7 +156,7 @@ export const addOrder = async (c) => {
             const nearestWorker = workersWithDistance[0];
 
             // Use test token for now, but use FCM token from DB keys
-            const testFcmToken = "dzsOBEHPRGeTtZIjOWcQac:APA91bHdkfJhL6w37tcv0cOjMg74lJTJsTbCZPzjkPz6hfSt3dYyRx88ecFgMeAHSmpYzQKBu-U0ze0kvkN9H9vwr1keaQw-mR-n4zmEMXvp7xzOg6HV5E0";
+            const testFcmToken = "dnx51i6KSyGyzPEkzkPULc:APA91bHYSj5-Mzjll7O8do5S5NKpDmQ4045Kzf1u9goHnI8Eo3_PYNNpzblYIX8_ysN_zzuxqypZALgx61Cl8t-KsW1D9JuGv0BaW1yTIWN1x_T7m_VDy0M";
             
             await sendFCMNotification(
                 testFcmToken, 
@@ -164,7 +178,7 @@ export const addOrder = async (c) => {
 
 export const rejectOrder = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+     const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
     const { mobile, reason, surveyorNumber } = await c.req.json();
 
     if (!mobile || !reason || !surveyorNumber) {
@@ -200,7 +214,7 @@ export const rejectOrder = async (c) => {
 
 export const completeOrder = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
     const { mobile, surveyorNumber } = await c.req.json();
 
     return await withDatabase(uri, async (db) => {
@@ -233,7 +247,7 @@ export const completeOrder = async (c) => {
 
 export const updateOrder = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+     const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
     const { mobile, name, whatsappNo, email, city, comment, referredBy, latitude, longitude, address } = await c.req.json();
 
     const existing = await withDatabase(uri, async (db) => {
@@ -278,7 +292,7 @@ export const updateOrder = async (c) => {
 
 export const updateOrderStatus = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+     const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
     const { mobile, status } = await c.req.json();
 
     const allowedStatuses = ["accepted", "inprogress", "completed"];
@@ -309,7 +323,7 @@ export const updateOrderStatus = async (c) => {
 
 export const getOrders = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+     const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
 
     const orders = await withDatabase(uri, async (db) => {
       return await db.collection("lead").find({}).toArray();

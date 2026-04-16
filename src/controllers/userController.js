@@ -21,7 +21,7 @@ const withDatabase = async (uri, fn) => {
 
 export const addForm = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const body = await c.req.json();
 
     const mobileNumber = body.mobileNumber || body.customerDetails?.mobileNumber;
@@ -57,7 +57,7 @@ export const addForm = async (c) => {
 
 export const updateForm = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const body = await c.req.json();
     const mobileNumber = body.mobileNumber;
 
@@ -93,7 +93,7 @@ export const updateForm = async (c) => {
 
 export const updateMobileNumber = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const { oldMobileNumber, newMobileNumber } = await c.req.json();
 
     if (!oldMobileNumber || !newMobileNumber) {

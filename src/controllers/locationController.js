@@ -46,7 +46,7 @@ const epochToDateTime = (epoch) => {
 
 export const addLocation = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
 
   
     const { phoneNo, latitude, longitude, epoch } = await c.req.json();
@@ -113,7 +113,7 @@ export const addLocation = async (c) => {
 
 export const getLocationByTime = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const { mobiles, date, startTime, endTime } = await c.req.json();
 
     if (!mobiles || !date || !startTime || !endTime) {
@@ -148,7 +148,7 @@ export const getLocationByTime = async (c) => {
 
 export const getCurrentLocation = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const { mobiles } = await c.req.json();
 
     if (!mobiles) {

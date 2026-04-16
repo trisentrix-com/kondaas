@@ -21,7 +21,7 @@ const SOLARMAN_BASE_URL = "https://globalapi.solarmanpv.com";
 export const getSolarmanToken = async (c) => {
   try {
     const { email, password } = await c.req.json();
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
 
     if (!email || !password) {
       return c.json({ error: "email and password are required!" }, 400);
@@ -68,8 +68,8 @@ export const getSolarmanToken = async (c) => {
 
 export const getSolarmanStations = async (c) => {
   try {
-    const { token } = await c.req.json(); // We've moved the token to the body for now
-    const uri = c.env.MONGODB_URI;
+    const { token } = await c.req.json();
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
 
     if (!token) {
       return c.json({ error: "Access token is required!" }, 400);
@@ -117,7 +117,7 @@ export const getSolarmanStations = async (c) => {
 export const getSolarmanDevices = async (c) => {
   try {
     const { token, stationId } = await c.req.json();
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
 
     return await withDatabase(uri, async (db) => {
       const keys = await getSystemKeys(db);
@@ -133,10 +133,10 @@ export const getSolarmanDevices = async (c) => {
             "Authorization": `bearer ${token}`
           },
           body: JSON.stringify({
-            stationId: stationId, // MUST be 62283080
+            stationId: stationId,
             page: 1,
             size: 20
-            // REMOVED: userId and deviceType. Let it return everything!
+
           })
         }
       );
@@ -147,7 +147,7 @@ export const getSolarmanDevices = async (c) => {
       return c.json({
         success: data.success,
         message: data.msg || "Response received",
-        // Solarman uses different keys for the list sometimes
+
         devices: data.deviceList || data.deviceListItems || data.stationDeviceList || []
       });
     });
@@ -159,7 +159,7 @@ export const getSolarmanDevices = async (c) => {
 export const getSolarmanRealTimeData = async (c) => {
   try {
     const { token, deviceId } = await c.req.json();
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
 
     if (!token || !deviceId) {
       return c.json({ error: "Token and Device ID are required!" }, 400);

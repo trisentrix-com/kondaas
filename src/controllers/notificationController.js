@@ -19,7 +19,7 @@ const withDatabase = async (uri, fn) => {
 
 // --- THE WORKER: Background WhatsApp Process ---
 const processWhatsAppNotification = async (notificationId, c) => {
-  const uri = c.env.MONGODB_URI;
+  const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
 
   try {
     await withDatabase(uri, async (db) => {
@@ -105,7 +105,7 @@ const processWhatsAppNotification = async (notificationId, c) => {
 // --- THE OFFICE: Add Notification ---
 export const addNotification = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const body = await c.req.json();
     const { from, to, mode, content, contentType } = body;
 
@@ -138,7 +138,7 @@ export const addNotification = async (c) => {
 // --- THE BRIDGE: Automated Scenario Notification ---
 export const triggerScenarioNotification = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const { surveyorNumber, customerMobile, scenarioType } = await c.req.json();
 
     return await withDatabase(uri, async (db) => {
@@ -186,7 +186,7 @@ export const triggerScenarioNotification = async (c) => {
 
 export const updateNotification = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const { id, status, retryAt, startedAt, retryCount } = await c.req.json();
 
     if (!id) return c.json({ error: "id is required!" }, 400);

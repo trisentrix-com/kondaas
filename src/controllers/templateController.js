@@ -21,7 +21,7 @@ const TEMPLATE_ID = "solarv1";
 
 export const createTemplate = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const { schema, uischema } = await c.req.json();
 
     if (!schema || !uischema) {
@@ -53,7 +53,7 @@ export const createTemplate = async (c) => {
 
 export const updateTemplate = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
     const { schema, uischema } = await c.req.json();
 
     if (!schema || !uischema) {
@@ -84,7 +84,7 @@ export const updateTemplate = async (c) => {
 
 export const getTemplate = async (c) => {
   try {
-    const uri = c.env.MONGODB_URI;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;
 
     const template = await withDatabase(uri, async (db) => {
       return await db.collection("templates").findOne({ id: TEMPLATE_ID });
