@@ -27,9 +27,13 @@ if (typeof process !== 'undefined' && process.release?.name === 'node') {
   const nodeServerPkg = '@hono/node-server'; 
   
   import(nodeServerPkg).then(({ serve }) => {
-    const port = 3000;
-    serve({ fetch: app.fetch, port });
-    console.log(`🚀 Docker Mode: http://localhost:${port}`);
+    const port = 8080;
+    serve({ 
+      fetch: app.fetch, 
+      port,
+      hostname: '0.0.0.0' // ✅ CRITICAL: Listen on all network interfaces
+    });
+    console.log(`🚀 Docker Mode: http://0.0.0.0:${port}`);
   }).catch(() => {
     // Cloudflare will hit this catch block during build and stay silent
   });

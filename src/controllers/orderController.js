@@ -60,26 +60,18 @@ const sendFCMNotification = async (deviceToken, customerData, distance, bearerTo
           notification: {
             sound: "kondaas",
             channel_id: "custom_sound_channel_v2",
-            click_action: "LEAD_NOTIFICATION_ACTION" 
-          },
-          actions: [
-            {
-              action: "ACTION_ACCEPT",
-              title: "✅ Accept"
-            },
-            {
-              action: "ACTION_REJECT",
-              title: "❌ Reject"
-            }
-          ]
+            click_action: "LEAD_NOTIFICATION_ACTION",
+            // ❌ 'actions' removed from here because FCM v1 doesn't support it in JSON
+          }
         },
         data: {
           type: "new_order",
           customerName: String(customerData.name || "New Customer"),
           distance: distStr,
           customerMobile: String(customerData.mobile || ""),
-          // ✅ leadId is now correctly received here
-          leadId: leadId ? leadId.toString() : ""
+          leadId: leadId ? leadId.toString() : "",
+          // ✅ Tell the Android app to show buttons manually
+          show_actions: "true" 
         }
       }
     };
@@ -95,7 +87,7 @@ const sendFCMNotification = async (deviceToken, customerData, distance, bearerTo
 
     const result = await response.json();
     if (!response.ok) console.error("FCM Error Response:", result);
-    
+
     return response.ok;
   } catch (err) {
     console.error("❌ FCM Exception:", err.message);
@@ -116,8 +108,8 @@ export const addOrder = async (c) => {
     return await withDatabase(uri, async (db) => {
       const keys = await getSystemKeys(db);
 
-      const todayDateOnly = new Date().toLocaleDateString("en-CA", { 
-        timeZone: "Asia/Kolkata" 
+      const todayDateOnly = new Date().toLocaleDateString("en-CA", {
+        timeZone: "Asia/Kolkata"
       });
 
       const result = await db.collection("lead").insertOne({
@@ -125,7 +117,7 @@ export const addOrder = async (c) => {
         email: email || null, city, comment, referredBy,
         latitude: latitude || null, longitude: longitude || null,
         address: address || null, status: "unaccepted",
-        createdAt: todayDateOnly, 
+        createdAt: todayDateOnly,
       });
 
       const leadId = result.insertedId;
@@ -158,15 +150,15 @@ export const addOrder = async (c) => {
             workersWithDistance.sort((a, b) => a.distance - b.distance);
             const nearestWorker = workersWithDistance[0];
 
-            const testFcmToken = "f7SF-UbQQjiHLj4kRGFcXD:APA91bG9euCGFMzOyQpvIRhIohMpK9vjRmaijh4s2DafmjPpK73lcaD5M5U_-b2w9BNrFx5-ZbRytCj2RDLPZldWG5X6zhlvNBnmoZTCqneLGPF24PAJElQ";
-            
+            const testFcmToken = "eQCCILhMTcifBUkzr81mNS:APA91bGAmKPT60YH30rFeueNz9U93F6tQ1-oRbLY8A7RzdO0VYPZwncVPiIlAvwJU-Gi_WJtqFRCbZgRSnlnxQRsDcMCDBDQYh3krvHng48o2VlhBbrEv68";
+
             // ✅ UPDATED: Now passing leadId as the 5th argument
             await sendFCMNotification(
-                testFcmToken, 
-                { name, mobile }, 
-                nearestWorker.distance, 
-                keys.firebase.fcmToken,
-                leadId 
+              testFcmToken,
+              { name, mobile },
+              nearestWorker.distance,
+              keys.firebase.fcmToken,
+              leadId
             );
           }
         }
@@ -182,7 +174,7 @@ export const addOrder = async (c) => {
 
 export const rejectOrder = async (c) => {
   try {
-     const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
     const { mobile, reason, surveyorNumber } = await c.req.json();
 
     if (!mobile || !reason || !surveyorNumber) {
@@ -192,9 +184,9 @@ export const rejectOrder = async (c) => {
     return await withDatabase(uri, async (db) => {
       const keys = await getSystemKeys(db);
       const lead = await db.collection("lead").findOne({ mobile });
-      
+
       if (!lead) return c.json({ error: "Lead not found" }, 404);
-     
+
       const boardResponse = await fetch("https://board.trisentrix.com/api/boards/MdwEaR2BjBaFJcG6P/lists/Lv8QCE5vvBn4H7XRz/cards", {
         method: "POST",
         headers: {
@@ -202,7 +194,7 @@ export const rejectOrder = async (c) => {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          authorId: "na9Foqu5XL6YfX2kv", 
+          authorId: "na9Foqu5XL6YfX2kv",
           swimlaneId: "fxPfDfFn9wArHSp6M",
           title: `${lead.name} - ${mobile} (Surveyor: ${surveyorNumber})`,
           description: `Reject Reason: ${reason}\n Surveyor: ${surveyorNumber}`
@@ -224,7 +216,7 @@ export const completeOrder = async (c) => {
     return await withDatabase(uri, async (db) => {
       const keys = await getSystemKeys(db);
       const lead = await db.collection("lead").findOne({ mobile });
-      
+
       if (!lead) return c.json({ error: "Lead not found" }, 404);
 
       const boardResponse = await fetch("https://board.trisentrix.com/api/boards/MdwEaR2BjBaFJcG6P/lists/uWQW5XKbrMZESKKMv/cards", {
@@ -234,7 +226,7 @@ export const completeOrder = async (c) => {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          authorId: "na9Foqu5XL6YfX2kv", 
+          authorId: "na9Foqu5XL6YfX2kv",
           swimlaneId: "fxPfDfFn9wArHSp6M",
           title: `${lead.name} - ${mobile}`,
           description: `Completed by Surveyor: ${surveyorNumber}`
@@ -251,7 +243,7 @@ export const completeOrder = async (c) => {
 
 export const updateOrder = async (c) => {
   try {
-     const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
     const { mobile, name, whatsappNo, email, city, comment, referredBy, latitude, longitude, address } = await c.req.json();
 
     const existing = await withDatabase(uri, async (db) => {
@@ -296,7 +288,7 @@ export const updateOrder = async (c) => {
 
 export const updateOrderStatus = async (c) => {
   try {
-     const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
     const { mobile, status } = await c.req.json();
 
     const allowedStatuses = ["accepted", "inprogress", "completed"];
@@ -327,7 +319,7 @@ export const updateOrderStatus = async (c) => {
 
 export const getOrders = async (c) => {
   try {
-     const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
+    const uri = c.env?.MONGODB_URI || process.env.MONGODB_URI;;
 
     const orders = await withDatabase(uri, async (db) => {
       return await db.collection("lead").find({}).toArray();
