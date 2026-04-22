@@ -14,7 +14,7 @@ RUN npm install
 COPY . .
 
 # 6. Open Port 3000
-EXPOSE 3000
+EXPOSE 3002
 
 # 7. The command to start the server
 CMD ["node", "index.js"]

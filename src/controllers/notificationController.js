@@ -1,4 +1,4 @@
-import { withDatabase,Binary,ObjectId,getSystemKeys } from '../utils/config.js'; 
+import { withDatabase, Binary, ObjectId, getSystemKeys } from '../utils/config.js';
 
 // --- THE WORKER: Background WhatsApp Process ---
 const processWhatsAppNotification = async (notificationId, c) => {
@@ -28,11 +28,11 @@ const processWhatsAppNotification = async (notificationId, c) => {
       let payload = { number: formattedNumber };
 
       if (type === "text") {
-        action = "sendText/trisentrix";
+        action = "sendText/martin";
         payload.text = buffer.toString('utf8');
       }
       else if (type === "pdf") {
-        action = "sendMedia/trisentrix";
+        action = "sendMedia/martin";
         const fileUrl = buffer.toString('utf8');
         payload = {
           number: formattedNumber,
@@ -43,7 +43,7 @@ const processWhatsAppNotification = async (notificationId, c) => {
         };
       }
       else if (type === "audio") {
-        action = "sendMedia/trisentrix";
+        action = "sendMedia/martin";
         const audioUrl = buffer.toString('utf8');
         payload = {
           number: formattedNumber,
@@ -119,7 +119,7 @@ export const addNotification = async (c) => {
       if (hasExecutionContext) {
         c.executionCtx.waitUntil(processWhatsAppNotification(notificationId, c));
       } else {
-        processWhatsAppNotification(notificationId, c).catch(err => 
+        processWhatsAppNotification(notificationId, c).catch(err =>
           console.error("Background WhatsApp Error:", err)
         );
       }
@@ -181,7 +181,7 @@ export const triggerScenarioNotification = async (c) => {
       } else {
         // AWS / Node.js Path
         // We fire and forget (don't use await) so the response is still fast
-        processWhatsAppNotification(notificationResult.insertedId, c).catch(err => 
+        processWhatsAppNotification(notificationResult.insertedId, c).catch(err =>
           console.error("Background Notification Error:", err)
         );
       }
