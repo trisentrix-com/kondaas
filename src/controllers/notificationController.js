@@ -149,7 +149,8 @@ export const triggerScenarioNotification = async (c) => {
       const messages = {
         1: `Hello ${customerName}, your Kondaas technician has started from the office. The technician will arrive in ${etaString}. Contact: ${surveyorNumber}.`,
         2: `Hello ${customerName}, your technician is just 300 meters away!`,
-        3: `Hello ${customerName}, your technician has arrived.`
+        3: `Hello ${customerName}, your technician has arrived.`,
+        4: `Hello ${customerName}, your technician has completed the work. Thank you for choosing Kondaas!`
       };
 
       const messageText = messages[scenarioType] || "";
