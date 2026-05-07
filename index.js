@@ -29,5 +29,5 @@ serve({
   port,
   hostname: '0.0.0.0'
 }, (info) => {
-  console.log(`🚀 Kondaas Backend Live: http://localhost:${info.port}`);
+  console.log(`🚀 Kondaaas Backend Live: http://localhost:${info.port}`);
 });
