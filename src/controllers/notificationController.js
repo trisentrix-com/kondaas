@@ -28,7 +28,7 @@ const processWhatsAppNotification = async (notificationId) => {
       const type = notification.contentType;
       const formattedNumber = `91${notification.to}`;
 
-      let action = (type === "text") ? "sendText/martin" : "sendMedia/martin";
+      let action = (type === "text") ? "sendText/narayanan" : "sendMedia/narayanan";
       let payload = { number: formattedNumber };
 
       // 3. CONSTRUCT PAYLOAD
@@ -121,7 +121,7 @@ export const addNotification = async (c) => {
  */
 export const triggerScenarioNotification = async (c) => {
   try {
-    const { surveyorNumber, customerMobile, scenarioType } = await c.req.json();
+    const { surveyorNumber, customerMobile, scenarioType, eta } = await c.req.json();
 
     return await withDatabase(MONGODB_URI, async (db) => {
       const lead = await db.collection("lead").findOne({ mobile: customerMobile });
@@ -130,8 +130,24 @@ export const triggerScenarioNotification = async (c) => {
       const customerName = lead.name || "Customer";
       const whatsappTo = lead.whatsappNo || lead.mobile;
 
+      // --- NEW TIME FORMATTING LOGIC ---
+      let etaString = eta ? `${eta} min` : "soon"; // Default fallback
+      
+      if (eta) {
+        const totalMinutes = parseInt(eta);
+        if (totalMinutes < 60) {
+          etaString = `${totalMinutes} min`;
+        } else {
+          const hours = Math.floor(totalMinutes / 60);
+          const mins = totalMinutes % 60;
+          const formattedMins = mins < 10 ? `0${mins}` : mins;
+          etaString = `${hours}.${formattedMins} hrs`;
+        }
+      }
+      // ---------------------------------
+
       const messages = {
-        1: `Hello ${customerName}, your Kondaas technician has started from the office. Contact: ${surveyorNumber}.`,
+        1: `Hello ${customerName}, your Kondaas technician has started from the office. The technician will arrive in ${etaString}. Contact: ${surveyorNumber}.`,
         2: `Hello ${customerName}, your technician is just 300 meters away!`,
         3: `Hello ${customerName}, your technician has arrived.`
       };
@@ -155,7 +171,11 @@ export const triggerScenarioNotification = async (c) => {
         console.error("Background Notification Error:", err)
       );
 
-      return c.json({ message: `Scenario ${scenarioType} queued for ${customerName}`, id: result.insertedId });
+      return c.json({ 
+        message: `Scenario ${scenarioType} queued for ${customerName}`, 
+        id: result.insertedId,
+        formattedTime: etaString // Helpful for debugging Postman
+      });
     });
   } catch (err) {
     return c.json({ error: err.message }, 500);

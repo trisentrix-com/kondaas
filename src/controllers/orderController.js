@@ -27,21 +27,23 @@ const getISTDateStrings = () => {
 // 1. Updated FCM function to include kilovolt in the message
 const sendFCMNotification = async (deviceToken, customerData, bearerToken, leadId, kilovolt, address) => {
   try {
-    if (!bearerToken || !deviceToken) return false;
+    if (!deviceToken || !bearerToken) return false;
 
     const kvInfo = kilovolt ? ` [${kilovolt}]` : "";
     const addrInfo = address ? ` at ${address}` : "";
+    // Prepare the string once to ensure consistency
+    const statusBody = `Customer: ${customerData.name || "New"}${kvInfo}${addrInfo}. Tap to accept.`;
 
     const payload = {
       message: {
-        token: deviceToken,
-        notification: {
-          title: "New Lead Assigned!",
-          // Result: "Customer: Rajesh [11kV] at Medavakkam. Tap to accept."
-          body: `Customer: ${customerData.name}${kvInfo}${addrInfo}. Tap to accept.`
-        },
+        token: deviceToken.trim(),
+        // We REMOVE the global 'notification' key here.
+        // This stops the "N/A" ghost notification from the System Brain.
         android: {
+          priority: "high",
           notification: {
+            title: "New Lead Assigned!",
+            body: statusBody,
             sound: "kondaas",
             channel_id: "custom_sound_channel_v2",
             click_action: "LEAD_NOTIFICATION_ACTION",
@@ -49,6 +51,8 @@ const sendFCMNotification = async (deviceToken, customerData, bearerToken, leadI
         },
         data: {
           type: "new_order",
+          title: "New Lead Assigned!",
+          body: statusBody,
           customerName: String(customerData.name || "New Customer"),
           customerMobile: String(customerData.mobile || ""),
           leadId: leadId ? leadId.toString() : "",
@@ -81,11 +85,11 @@ export const addOrder = async (c) => {
     const { name, mobile, whatsappNo, email, city, comment, referredBy, latitude, longitude, address, kilovolt } = body;
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      // 1. Get Keys (Now using flowtrix object per your screenshot)
+      // 1. Get System Keys from DB
       const keys = await getSystemKeys(db);
       const { todayDateOnly, todayKey } = getISTDateStrings();
 
-      // 2. Save Lead to MongoDB (All fields)
+      // 2. Save Lead to MongoDB
       const result = await db.collection("lead").insertOne({
         name,
         mobile,
@@ -104,10 +108,8 @@ export const addOrder = async (c) => {
 
       const leadId = result.insertedId;
 
-      // 3. Sync to Flowtrix Board (Name & Phone only)
-      // Updated: now pulls from keys.flowtrix.boardToken
+      // 3. Sync to Flowtrix Board
       const dbBoardToken = keys.flowtrix?.boardToken?.trim();
-
       if (dbBoardToken) {
         try {
           await fetch("http://flowtrix:8080/api/boards/kALDJ4Yi9Q78wuDnZ/lists/rGsxfBXrLqm7b8M4f/cards", {
@@ -129,7 +131,7 @@ export const addOrder = async (c) => {
         }
       }
 
-      // 4. Worker Notification Logic (Maintains KV and Address)
+      // 4. Notification Logic
       if (latitude && longitude) {
         const activeWorkers = await db.collection("locations")
           .find({ [todayKey]: { $exists: true } }).toArray();
@@ -150,11 +152,19 @@ export const addOrder = async (c) => {
 
           if (workersWithDistance.length > 0) {
             workersWithDistance.sort((a, b) => a.distance - b.distance);
-            const nearestWorker = workersWithDistance[0];
-            const testFcmToken = "f34nZKtCR2GC5ZgXsjWUrW:APA91bFNGJrXbRrijqem9SvO7gi4nf4CB34B7czZmH-IJKYHHrXlzfGiid3LH0gjprywq7dFJ7TwKWsyx1ecdCurqLyLxYK-khx8l-yG5pGekDN90g3d6Po";
+            
+            // DYNAMIC TOKENS: Pulling from the DB 'keys' object
+            const targetFcmToken = keys.firebase?.testFcmToken; 
+            const bearerToken = keys.firebase?.fcmToken;
 
-            // Notification still sends KV and Address to the mobile app
-            await sendFCMNotification(testFcmToken, { name, mobile }, keys.firebase.fcmToken, leadId, kilovolt, address);
+            await sendFCMNotification(
+              targetFcmToken, 
+              { name, mobile }, 
+              bearerToken, 
+              leadId, 
+              kilovolt, 
+              address
+            );
           }
         }
       }
@@ -162,6 +172,7 @@ export const addOrder = async (c) => {
       return c.json({ message: "Order added and synced successfully!", id: leadId }, 201);
     });
   } catch (err) {
+    console.error("❌ AddOrder Error:", err.message);
     return c.json({ error: "Internal server error" }, 500);
   }
 };
@@ -228,16 +239,16 @@ export const rejectOrder = async (c) => {
 export const completeOrder = async (c) => {
   try {
     const { mobile, surveyorNumber } = await c.req.json();
-    
+
     return await withDatabase(MONGODB_URI, async (db) => {
       const keys = await getSystemKeys(db);
       const lead = await db.collection("lead").findOne({ mobile });
-      
+
       if (!lead) return c.json({ error: "Lead not found" }, 404);
 
       // CHANGED: Use flowtrix instead of trisentrix
       const token = keys?.flowtrix?.boardToken;
-      
+
       if (!token) return c.json({ error: "Flowtrix board token missing in DB" }, 500);
 
       const boardResponse = await fetch("https://smugger-milagros-semblably.ngrok-free.dev/api/boards/xJQn5HmYG4P6n6ijY/lists/drznJ9DKKkhiZ4FGp/cards", {
@@ -250,7 +261,7 @@ export const completeOrder = async (c) => {
           authorId: "LeuLZuxmRPqH3hY3o",
           swimlaneId: "24SZXeX95zNYKrsno",
           title: `${lead.name} - ${mobile}`,
-          description: `Completed\n Phone: ${mobile}\n Surveyor number : ${surveyorNumber}` 
+          description: `Completed\n Phone: ${mobile}\n Surveyor number : ${surveyorNumber}`
         })
       });
 
@@ -271,19 +282,19 @@ export const completeOrder = async (c) => {
 export const acceptOrder = async (c) => {
   try {
     const { mobile, surveyorNumber } = await c.req.json();
-    
+
     return await withDatabase(MONGODB_URI, async (db) => {
       const keys = await getSystemKeys(db);
       const lead = await db.collection("lead").findOne({ mobile });
-      
+
       if (!lead) return c.json({ error: "Lead not found" }, 404);
 
       // CHANGED: Use flowtrix instead of trisentrix
       const token = keys?.flowtrix?.boardToken;
-      
+
       if (!token) return c.json({ error: "Flowtrix board token missing in DB" }, 500);
 
-      const boardResponse = await fetch("https://smugger-milagros-semblably.ngrok-free.dev/api/boards/xJQn5HmYG4P6n6ijY/lists/tnkdQ39jEmyFobgAF/cards", {
+      const boardResponse = await fetch("https://smugger-milagros-semblably.ngrok-free.dev/api/boards/xJQn5HmYG4P6n6ijY/lists/7xsP7NWGxHLfGqkPL/cards", {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token.trim()}`,
@@ -293,7 +304,7 @@ export const acceptOrder = async (c) => {
           authorId: "LeuLZuxmRPqH3hY3o",
           swimlaneId: "24SZXeX95zNYKrsno",
           title: `${lead.name} - ${mobile}`,
-          description: `Accepted\n Phone: ${mobile}\n Surveyor number : ${surveyorNumber}` 
+          description: `Accepted\n Phone: ${mobile}\n Surveyor number : ${surveyorNumber}`
         })
       });
 
@@ -314,16 +325,16 @@ export const acceptOrder = async (c) => {
 export const inprogressOrder = async (c) => {
   try {
     const { mobile, surveyorNumber } = await c.req.json();
-    
+
     return await withDatabase(MONGODB_URI, async (db) => {
       const keys = await getSystemKeys(db);
       const lead = await db.collection("lead").findOne({ mobile });
-      
+
       if (!lead) return c.json({ error: "Lead not found" }, 404);
 
       // CHANGED: Use flowtrix instead of trisentrix
       const token = keys?.flowtrix?.boardToken;
-      
+
       if (!token) return c.json({ error: "Flowtrix board token missing in DB" }, 500);
 
       const boardResponse = await fetch("https://smugger-milagros-semblably.ngrok-free.dev/api/boards/xJQn5HmYG4P6n6ijY/lists/7ZH3sbjMTCj4kBDgM/cards", {
@@ -336,7 +347,7 @@ export const inprogressOrder = async (c) => {
           authorId: "LeuLZuxmRPqH3hY3o",
           swimlaneId: "24SZXeX95zNYKrsno",
           title: `${lead.name} - ${mobile}`,
-          description: `Inprogress\n Phone: ${mobile}\n Surveyor number : ${surveyorNumber}` 
+          description: `Inprogress\n Phone: ${mobile}\n Surveyor number : ${surveyorNumber}`
         })
       });
 

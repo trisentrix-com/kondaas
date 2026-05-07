@@ -14,7 +14,7 @@ const getKeys = async (db) => {
 export const getSolarmanToken = async (c) => {
   try {
     const { email, password } = await c.req.json();
-
+   
     if (!email || !password) {
       return c.json({ error: "email and password are required!" }, 400);
     }
@@ -44,7 +44,7 @@ export const getSolarmanToken = async (c) => {
     });
   } catch (err) {
     return c.json({ error: err.message }, 500);
-  }
+  } 
 };
 
 export const getSolarmanStations = async (c) => {
