@@ -85,11 +85,43 @@ export const addOrder = async (c) => {
     const { name, mobile, whatsappNo, email, city, comment, referredBy, latitude, longitude, address, kilovolt } = body;
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      // 1. Get System Keys from DB
       const keys = await getSystemKeys(db);
       const { todayDateOnly, todayKey } = getISTDateStrings();
 
-      // 2. Save Lead to MongoDB
+      // 1. New Flowtrix Config from your KT
+      const boardId = "2FswXA8aPgN77czTc";
+      const newEntryListId = "MdzfSFNPpJK2kJwtE";
+      const flowtrixToken = "RbVRbci-5iBEZ8NtaWpDagU8FiwQwdDD6nOEqCcmBbw";
+      
+      let flowtrixCardId = null;
+
+      // 2. Sync to Flowtrix FIRST to get the Card ID
+      try {
+        const flowtrixResponse = await fetch(`http://flowtrix:8080/api/boards/${boardId}/lists/${newEntryListId}/cards`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${flowtrixToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            title: `${name} - ${mobile}`,
+            description: `New Entry\n Phone: ${mobile}\n Name: ${name}`,
+            authorId: "Lxc9EwKM5j4ov95ZT",
+            swimlaneId: "ce7E2A4yMHQ4dnyC5"
+          })
+        });
+
+        if (flowtrixResponse.ok) {
+          const responseData = await flowtrixResponse.json();
+          // This is the 'fecMFhX3vDPkuCkHF' style ID we need for the PUT requests later
+          flowtrixCardId = responseData._id; 
+          console.log("✅ Flowtrix Board Sync Successful. Card ID:", flowtrixCardId);
+        }
+      } catch (syncErr) {
+        console.error("❌ Flowtrix Sync failed:", syncErr.message);
+      }
+
+      // 3. Save Lead to MongoDB (Including the captured Card ID)
       const result = await db.collection("lead").insertOne({
         name,
         mobile,
@@ -103,35 +135,14 @@ export const addOrder = async (c) => {
         address: address || null,
         kilovolt: kilovolt || null,
         status: "unaccepted",
+        flowtrixCardId: flowtrixCardId,
+        currentListId: "MdzfSFNPpJK2kJwtE", 
         createdAt: todayDateOnly,
       });
 
       const leadId = result.insertedId;
 
-      // 3. Sync to Flowtrix Board
-      const dbBoardToken = keys.flowtrix?.boardToken?.trim();
-      if (dbBoardToken) {
-        try {
-          await fetch("http://flowtrix:8080/api/boards/kALDJ4Yi9Q78wuDnZ/lists/rGsxfBXrLqm7b8M4f/cards", {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${dbBoardToken}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              title: `${name} - ${mobile}`,
-              description: `New Entry\n Phone: ${mobile}\n Name: ${name}`,
-              authorId: "rithikuser001",
-              swimlaneId: "qWzLaocWgSMpBBS6z"
-            })
-          });
-          console.log("✅ Flowtrix Board Sync Successful");
-        } catch (syncErr) {
-          console.error("❌ Flowtrix Sync failed:", syncErr.message);
-        }
-      }
-
-      // 4. Notification Logic
+      // 4. Notification Logic (FCM)
       if (latitude && longitude) {
         const activeWorkers = await db.collection("locations")
           .find({ [todayKey]: { $exists: true } }).toArray();
@@ -153,7 +164,6 @@ export const addOrder = async (c) => {
           if (workersWithDistance.length > 0) {
             workersWithDistance.sort((a, b) => a.distance - b.distance);
             
-            // DYNAMIC TOKENS: Pulling from the DB 'keys' object
             const targetFcmToken = keys.firebase?.testFcmToken; 
             const bearerToken = keys.firebase?.fcmToken;
 
@@ -169,7 +179,11 @@ export const addOrder = async (c) => {
         }
       }
 
-      return c.json({ message: "Order added and synced successfully!", id: leadId }, 201);
+      return c.json({ 
+        message: "Order added and synced successfully!", 
+        id: leadId,
+        flowtrixId: flowtrixCardId 
+      }, 201);
     });
   } catch (err) {
     console.error("❌ AddOrder Error:", err.message);
@@ -177,193 +191,81 @@ export const addOrder = async (c) => {
   }
 };
 
-
-export const rejectOrder = async (c) => {
+export const syncToFlowtrix = async (c) => {
   try {
-    const { mobile, surveyorNumber, reason } = await c.req.json();
+    const { customerMobile, surveyorNumber, status } = await c.req.json();
 
-    if (!mobile) {
-      return c.json({ error: "Mobile number is required" }, 400);
-    }
+    const listIdMap = {
+      "accepted": "mtcXAPeWbNmFYfTAX",
+      "inprogress": "BNynXwMhgJfGpmWfX",
+      "completed": "A4p7fzj8975NAmjny",
+      "rejected": "FARBgod3N6na4iFok"
+    };
+
+    const targetListId = listIdMap[status.toLowerCase()];
+    if (!targetListId) return c.json({ error: "Invalid status" }, 400);
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      // 1. VALIDATION: Check if this lead exists in our DB first
-      const leadExists = await db.collection("lead").findOne({ mobile });
+      // 1. Find the lead (Trying both String and Number types to be safe)
+      const lead = await db.collection("lead").findOne({ 
+        $or: [
+          { mobile: customerMobile }, 
+          { mobile: String(customerMobile) },
+          { mobile: Number(customerMobile) }
+        ] 
+      });
 
-      if (!leadExists) {
-        console.warn(`⚠️ Rejection blocked: Mobile ${mobile} not found in database.`);
-        return c.json({ error: "No lead found with this mobile number. Rejection ignored." }, 404);
+      if (!lead || !lead.flowtrixCardId) {
+        console.error(`❌ Lead not found for mobile: ${customerMobile}`);
+        return c.json({ error: "Lead not found in database." }, 404);
       }
 
-      // 2. Get the token from DB
-      const keys = await getSystemKeys(db);
-      const boardToken = keys.flowtrix?.boardToken?.trim();
+      const currentOriginId = lead.currentListId || "MdzfSFNPpJK2kJwtE";
+      console.log(`📡 Moving from: ${currentOriginId} -> To: ${targetListId}`);
 
-      if (boardToken) {
-        try {
-          // 3. POST to Flowtrix (Now that we know the lead is real)
-          const boardResponse = await fetch("http://flowtrix:8080/api/boards/kALDJ4Yi9Q78wuDnZ/lists/4TP3iFH6AhAoxysuA/cards", {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${boardToken}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              title: `${mobile}`,
-              description: `Phone: ${mobile}\n Surveyor number : ${surveyorNumber}\nReject Reason: ${reason}`,
-              authorId: "rithikuser001",
-              swimlaneId: "qWzLaocWgSMpBBS6z"
-            })
-          });
+      const boardId = "2FswXA8aPgN77czTc";
+      const flowtrixToken = "RbVRbci-5iBEZ8NtaWpDagU8FiwQwdDD6nOEqCcmBbw";
 
-          if (boardResponse.ok) {
-            console.log(`✅ Rejection synced for verified lead: ${mobile}`);
-            return c.json({ message: "Rejected and synced successfully" });
-          } else {
-            return c.json({ error: "Board sync failed" }, 500);
-          }
-        } catch (syncErr) {
-          console.error("❌ Network Error reaching Flowtrix:", syncErr.message);
-          return c.json({ error: "Flowtrix API unreachable" }, 500);
+      // 2. Flowtrix API Call
+      const response = await fetch(`http://flowtrix:8080/api/boards/${boardId}/lists/${currentOriginId}/cards/${lead.flowtrixCardId}`, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${flowtrixToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          listId: targetListId, 
+          description: `${status.toUpperCase()}\n Surveyor: ${surveyorNumber}`
+        })
+      });
+
+      if (response.ok) {
+        // 3. SECURE DB UPDATE: Use the unique _id from the lead we just found
+        const updateResult = await db.collection("lead").updateOne(
+          { _id: lead._id }, 
+          { $set: { currentListId: targetListId } }
+        );
+
+        if (updateResult.modifiedCount > 0) {
+          console.log(`✅ DB Success: currentListId updated to ${targetListId}`);
+        } else {
+          console.warn("⚠️ Flowtrix moved, but DB already had this List ID.");
         }
-      }
 
-      return c.json({ error: "Authentication token not found" }, 500);
-    });
-  } catch (err) {
-    return c.json({ error: "Internal server error" }, 500);
-  }
-};
-
-
-export const completeOrder = async (c) => {
-  try {
-    const { mobile, surveyorNumber } = await c.req.json();
-
-    return await withDatabase(MONGODB_URI, async (db) => {
-      const keys = await getSystemKeys(db);
-      const lead = await db.collection("lead").findOne({ mobile });
-
-      if (!lead) return c.json({ error: "Lead not found" }, 404);
-
-      // CHANGED: Use flowtrix instead of trisentrix
-      const token = keys?.flowtrix?.boardToken;
-
-      if (!token) return c.json({ error: "Flowtrix board token missing in DB" }, 500);
-
-      const boardResponse = await fetch("https://smugger-milagros-semblably.ngrok-free.dev/api/boards/xJQn5HmYG4P6n6ijY/lists/drznJ9DKKkhiZ4FGp/cards", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token.trim()}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          authorId: "LeuLZuxmRPqH3hY3o",
-          swimlaneId: "24SZXeX95zNYKrsno",
-          title: `${lead.name} - ${mobile}`,
-          description: `Completed\n Phone: ${mobile}\n Surveyor number : ${surveyorNumber}`
-        })
-      });
-
-      if (boardResponse.ok) {
-        return c.json({ message: "Completed and synced locally" });
+        return c.json({ success: true, message: `Moved to ${status}` });
       } else {
-        const errorData = await boardResponse.text();
-        console.error("Board sync failed:", errorData);
-        return c.json({ error: "Board sync failed" }, 500);
+        const errorText = await response.text();
+        console.error("❌ Flowtrix Error:", errorText);
+        return c.json({ error: "Flowtrix update failed", details: errorText }, 500);
       }
     });
   } catch (err) {
-    console.error("Internal server error:", err);
+    console.error("❌ Exception:", err.message);
     return c.json({ error: "Internal server error" }, 500);
   }
 };
 
-export const acceptOrder = async (c) => {
-  try {
-    const { mobile, surveyorNumber } = await c.req.json();
 
-    return await withDatabase(MONGODB_URI, async (db) => {
-      const keys = await getSystemKeys(db);
-      const lead = await db.collection("lead").findOne({ mobile });
-
-      if (!lead) return c.json({ error: "Lead not found" }, 404);
-
-      // CHANGED: Use flowtrix instead of trisentrix
-      const token = keys?.flowtrix?.boardToken;
-
-      if (!token) return c.json({ error: "Flowtrix board token missing in DB" }, 500);
-
-      const boardResponse = await fetch("https://smugger-milagros-semblably.ngrok-free.dev/api/boards/xJQn5HmYG4P6n6ijY/lists/7xsP7NWGxHLfGqkPL/cards", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token.trim()}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          authorId: "LeuLZuxmRPqH3hY3o",
-          swimlaneId: "24SZXeX95zNYKrsno",
-          title: `${lead.name} - ${mobile}`,
-          description: `Accepted\n Phone: ${mobile}\n Surveyor number : ${surveyorNumber}`
-        })
-      });
-
-      if (boardResponse.ok) {
-        return c.json({ message: "Completed and synced locally" });
-      } else {
-        const errorData = await boardResponse.text();
-        console.error("Board sync failed:", errorData);
-        return c.json({ error: "Board sync failed" }, 500);
-      }
-    });
-  } catch (err) {
-    console.error("Internal server error:", err);
-    return c.json({ error: "Internal server error" }, 500);
-  }
-};
-
-export const inprogressOrder = async (c) => {
-  try {
-    const { mobile, surveyorNumber } = await c.req.json();
-
-    return await withDatabase(MONGODB_URI, async (db) => {
-      const keys = await getSystemKeys(db);
-      const lead = await db.collection("lead").findOne({ mobile });
-
-      if (!lead) return c.json({ error: "Lead not found" }, 404);
-
-      // CHANGED: Use flowtrix instead of trisentrix
-      const token = keys?.flowtrix?.boardToken;
-
-      if (!token) return c.json({ error: "Flowtrix board token missing in DB" }, 500);
-
-      const boardResponse = await fetch("https://smugger-milagros-semblably.ngrok-free.dev/api/boards/xJQn5HmYG4P6n6ijY/lists/7ZH3sbjMTCj4kBDgM/cards", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token.trim()}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          authorId: "LeuLZuxmRPqH3hY3o",
-          swimlaneId: "24SZXeX95zNYKrsno",
-          title: `${lead.name} - ${mobile}`,
-          description: `Inprogress\n Phone: ${mobile}\n Surveyor number : ${surveyorNumber}`
-        })
-      });
-
-      if (boardResponse.ok) {
-        return c.json({ message: "Completed and synced locally" });
-      } else {
-        const errorData = await boardResponse.text();
-        console.error("Board sync failed:", errorData);
-        return c.json({ error: "Board sync failed" }, 500);
-      }
-    });
-  } catch (err) {
-    console.error("Internal server error:", err);
-    return c.json({ error: "Internal server error" }, 500);
-  }
-};
 
 
 

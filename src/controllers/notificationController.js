@@ -1,21 +1,21 @@
 import { withDatabase, Binary, ObjectId, getSystemKeys } from '../utils/config.js';
+import { generatePDF } from '../utils/pdfGenerator.js';
+import { uploadToR2 } from '../utils/s3Upload.js';
+import { getInvoiceTemplate } from '../templates/invoiceTemplate.js';
+import path from 'path';
 
-// Centralized URI fetching
 const MONGODB_URI = process.env.MONGODB_URI;
 
 /**
  * --- THE WORKER ---
  * Handles the actual WhatsApp API call in the background.
- * Optimized for Node.js Event Loop.
  */
 const processWhatsAppNotification = async (notificationId) => {
   try {
     await withDatabase(MONGODB_URI, async (db) => {
-      // 1. Fetch Configuration        
       const keys = await getSystemKeys(db);
       const { apiUrl: BASE_URL, apiKey: API_KEY } = keys.whatsapp;
 
-      // 2. CLAIM & LOCK: Ensure no other process picks this up
       const notification = await db.collection("notifications").findOneAndUpdate(
         { _id: notificationId, status: "pending" },
         { $set: { status: "processing", startedAt: new Date() } },
@@ -24,50 +24,46 @@ const processWhatsAppNotification = async (notificationId) => {
 
       if (!notification) return;
 
-      const buffer = notification.content.buffer;
       const type = notification.contentType;
       const formattedNumber = `91${notification.to}`;
+      const contentString = notification.content.buffer.toString('utf8');
 
       let action = (type === "text") ? "sendText/narayanan" : "sendMedia/narayanan";
       let payload = { number: formattedNumber };
 
-      // 3. CONSTRUCT PAYLOAD
       if (type === "text") {
-        payload.text = buffer.toString('utf8');
+        payload.text = contentString;
       } else {
+        // For Scenario 4, the contentString is the Cloud URL.
+        // The caption is pulled from the notification record if you store it, 
+        // or we use a standard one here.
         payload = {
           ...payload,
-          mediatype: type === "pdf" ? "document" : "audio",
-          media: buffer.toString('utf8'),
-          ...(type === "pdf" && { 
-            fileName: "Kondaas_Report.pdf", 
-            caption: "Your document from Kondaas is ready." 
-          })
+          mediatype: "document",
+          media: contentString, 
+          fileName: "Kondaas_Invoice.pdf", 
+          caption: notification.caption || "Your technician has completed the work. Thank you for choosing Kondaas!" 
         };
       }
 
-      // 4. EXTERNAL API CALL
       const response = await fetch(`${BASE_URL}${action}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "apikey": API_KEY },
         body: JSON.stringify(payload)
       });
 
-      // 5. FINALIZE
       if (response.ok) {
         await db.collection("notifications").updateOne(
           { _id: notificationId },
           { $set: { status: "completed", completedAt: new Date() } }
         );
-        console.log(`✅ WhatsApp ${type} sent to ${formattedNumber}`);
+        console.log(`✅ WhatsApp sent to ${formattedNumber}`);
       } else {
-        const errorText = await response.text();
-        throw new Error(`API Error ${response.status}: ${errorText}`);
+        throw new Error(`API Error ${response.status}`);
       }
     });
   } catch (err) {
     console.error("❌ WhatsApp Task Failed:", err.message);
-    // Update DB with failure status
     await withDatabase(MONGODB_URI, async (db) => {
       await db.collection("notifications").updateOne(
         { _id: notificationId },
@@ -78,8 +74,83 @@ const processWhatsAppNotification = async (notificationId) => {
 };
 
 /**
- * --- THE OFFICE ---
- * Endpoints for adding new notifications.
+ * --- THE BRIDGE ---
+ * Automated Scenario logic with PDF generation for Scenario 4.
+ */
+export const triggerScenarioNotification = async (c) => {
+  try {
+    const { surveyorNumber, customerMobile, scenarioType, eta } = await c.req.json();
+
+    return await withDatabase(MONGODB_URI, async (db) => {
+      const lead = await db.collection("lead").findOne({ mobile: customerMobile });
+      if (!lead) return c.json({ error: "Lead not found" }, 404);
+
+      const customerName = lead.name || "Customer";
+      const whatsappTo = lead.whatsappNo || lead.mobile;
+      
+      const messages = {
+        1: `Hello ${customerName}, your Kondaas technician has started. Arrival in ${eta || 'soon'} min. Contact: ${surveyorNumber}.`,
+        2: `Hello ${customerName}, your technician is just 300 meters away!`,
+        3: `Hello ${customerName}, your technician has arrived.`,
+        4: `Hello ${customerName}, your technician has completed the work. Thank you for choosing Kondaas!`
+      };
+
+      let finalContent = messages[scenarioType] || "";
+      let contentType = "text";
+      let notificationCaption = "";
+
+      // --- PDF GENERATION LOGIC FOR SCENARIO 4 ---
+      if (scenarioType === 4) {
+        try {
+          console.log("📄 Scenario 4: Generating PDF...");
+          
+          const shortId = Math.random().toString(36).substring(7);
+          const fileName = `Inv_${shortId}.pdf`; 
+          const filePath = path.join(process.cwd(), fileName);
+          
+          lead.invoiceNo = `INV-${shortId.toUpperCase()}`;
+          lead.invoiceDate = new Date().toLocaleDateString('en-IN');
+
+          const html = getInvoiceTemplate(lead); 
+          await generatePDF(html, filePath);
+          
+          const cloudUrl = await uploadToR2(filePath, fileName);
+          
+          finalContent = String(cloudUrl).trim(); 
+          contentType = "pdf"; 
+          // We store the message as a caption so the worker can send it with the file
+          notificationCaption = messages[4];
+          
+          console.log(`🔗 PDF URL Generated: ${finalContent}`);
+        } catch (pdfErr) {
+          console.error("PDF Flow failed, falling back to text:", pdfErr);
+          finalContent = messages[4];
+          contentType = "text";
+        }
+      }
+
+      const result = await db.collection("notifications").insertOne({
+        from: "Kondaas_System",
+        to: whatsappTo,
+        mode: "whatsapp",
+        content: new Binary(Buffer.from(finalContent, 'utf8')),
+        contentType: contentType,
+        caption: notificationCaption, // Pass the text message here
+        status: "pending",
+        createdAt: new Date()
+      });
+
+      processWhatsAppNotification(result.insertedId).catch(err => console.error(err));
+
+      return c.json({ message: `Scenario ${scenarioType} processed`, id: result.insertedId });
+    });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+};
+
+/**
+ * --- MANUAL ENDPOINTS ---
  */
 export const addNotification = async (c) => {
   try {
@@ -90,7 +161,7 @@ export const addNotification = async (c) => {
       return c.json({ error: "Missing required fields" }, 400);
     }
 
-    const contentBinary = new Binary(Buffer.from(content, 'base64'));
+    const contentBinary = new Binary(Buffer.from(content, 'utf8'));
 
     const notificationId = await withDatabase(MONGODB_URI, async (db) => {
       const result = await db.collection("notifications").insertOne({
@@ -103,7 +174,6 @@ export const addNotification = async (c) => {
     });
 
     if (mode === "whatsapp") {
-   
       processWhatsAppNotification(notificationId).catch(err =>
         console.error("Background WhatsApp Error:", err)
       );
@@ -115,77 +185,6 @@ export const addNotification = async (c) => {
   }
 };
 
-/**
- * --- THE BRIDGE ---
- * Automated Scenario logic.
- */
-export const triggerScenarioNotification = async (c) => {
-  try {
-    const { surveyorNumber, customerMobile, scenarioType, eta } = await c.req.json();
-
-    return await withDatabase(MONGODB_URI, async (db) => {
-      const lead = await db.collection("lead").findOne({ mobile: customerMobile });
-      if (!lead) return c.json({ error: "Lead not found" }, 404);
-
-      const customerName = lead.name || "Customer";
-      const whatsappTo = lead.whatsappNo || lead.mobile;
-
-      // --- NEW TIME FORMATTING LOGIC ---
-      let etaString = eta ? `${eta} min` : "soon"; // Default fallback
-      
-      if (eta) {
-        const totalMinutes = parseInt(eta);
-        if (totalMinutes < 60) {
-          etaString = `${totalMinutes} min`;
-        } else {
-          const hours = Math.floor(totalMinutes / 60);
-          const mins = totalMinutes % 60;
-          const formattedMins = mins < 10 ? `0${mins}` : mins;
-          etaString = `${hours}.${formattedMins} hrs`;
-        }
-      }
-      // ---------------------------------
-
-      const messages = {
-        1: `Hello ${customerName}, your Kondaas technician has started from the office. The technician will arrive in ${etaString}. Contact: ${surveyorNumber}.`,
-        2: `Hello ${customerName}, your technician is just 300 meters away!`,
-        3: `Hello ${customerName}, your technician has arrived.`,
-        4: `Hello ${customerName}, your technician has completed the work. Thank you for choosing Kondaas!`
-      };
-
-      const messageText = messages[scenarioType] || "";
-      const base64Content = Buffer.from(messageText).toString('base64');
-
-      const result = await db.collection("notifications").insertOne({
-        from: "Kondaas_System",
-        to: whatsappTo,
-        mode: "whatsapp",
-        content: new Binary(Buffer.from(base64Content, 'base64')),
-        contentType: "text",
-        status: "pending",
-        retryCount: 0,
-        createdAt: new Date()
-      });
-
-      // Background trigger
-      processWhatsAppNotification(result.insertedId).catch(err =>
-        console.error("Background Notification Error:", err)
-      );
-
-      return c.json({ 
-        message: `Scenario ${scenarioType} queued for ${customerName}`, 
-        id: result.insertedId,
-        formattedTime: etaString // Helpful for debugging Postman
-      });
-    });
-  } catch (err) {
-    return c.json({ error: err.message }, 500);
-  }
-};
-
-/**
- * --- MANUAL UPDATE ---
- */
 export const updateNotification = async (c) => {
   try {
     const { id, status, retryCount } = await c.req.json();

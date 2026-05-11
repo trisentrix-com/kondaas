@@ -11,10 +11,12 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1045.0",
     "@hono/node-server": "^1.19.14",
     "dotenv": "^17.4.2",
     "hono": "^4.12.9",
     "mongodb": "^7.1.0",
+    "puppeteer": "^24.43.0",
     "zod": "^3.25.76"
   }
 }
