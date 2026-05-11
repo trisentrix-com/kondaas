@@ -3,6 +3,7 @@ import { generatePDF } from '../utils/pdfGenerator.js';
 import { uploadToR2 } from '../utils/s3Upload.js';
 import { getInvoiceTemplate } from '../templates/invoiceTemplate.js';
 import path from 'path';
+import fs from 'fs';
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -26,6 +27,7 @@ const processWhatsAppNotification = async (notificationId) => {
 
       const type = notification.contentType;
       const formattedNumber = `91${notification.to}`;
+      // contentString contains the Cloud URL for PDFs
       const contentString = notification.content.buffer.toString('utf8');
 
       let action = (type === "text") ? "sendText/narayanan" : "sendMedia/narayanan";
@@ -34,15 +36,13 @@ const processWhatsAppNotification = async (notificationId) => {
       if (type === "text") {
         payload.text = contentString;
       } else {
-        // For Scenario 4, the contentString is the Cloud URL.
-        // The caption is pulled from the notification record if you store it, 
-        // or we use a standard one here.
         payload = {
           ...payload,
           mediatype: "document",
           media: contentString, 
           fileName: "Kondaas_Invoice.pdf", 
-          caption: notification.caption || "Your technician has completed the work. Thank you for choosing Kondaas!" 
+          // FIX: Prioritize notification.caption from the DB!
+          caption: notification.caption || "Thank you for choosing Kondaas!" 
         };
       }
 
@@ -59,7 +59,9 @@ const processWhatsAppNotification = async (notificationId) => {
         );
         console.log(`✅ WhatsApp sent to ${formattedNumber}`);
       } else {
-        throw new Error(`API Error ${response.status}`);
+        // Log the error body to see why the API rejected it (helps with 500 errors)
+        const errorData = await response.text();
+        throw new Error(`API Error ${response.status}: ${errorData}`);
       }
     });
   } catch (err) {
@@ -82,8 +84,9 @@ export const triggerScenarioNotification = async (c) => {
     const { surveyorNumber, customerMobile, scenarioType, eta } = await c.req.json();
 
     return await withDatabase(MONGODB_URI, async (db) => {
+      // --- STEP 1: VERIFY EXISTENCE IN LEADS ---
       const lead = await db.collection("lead").findOne({ mobile: customerMobile });
-      if (!lead) return c.json({ error: "Lead not found" }, 404);
+      if (!lead) return c.json({ error: "Lead not found in leads collection" }, 404);
 
       const customerName = lead.name || "Customer";
       const whatsappTo = lead.whatsappNo || lead.mobile;
@@ -95,54 +98,77 @@ export const triggerScenarioNotification = async (c) => {
         4: `Hello ${customerName}, your technician has completed the work. Thank you for choosing Kondaas!`
       };
 
-      let finalContent = messages[scenarioType] || "";
-      let contentType = "text";
-      let notificationCaption = "";
-
-      // --- PDF GENERATION LOGIC FOR SCENARIO 4 ---
-      if (scenarioType === 4) {
-        try {
-          console.log("📄 Scenario 4: Generating PDF...");
-          
-          const shortId = Math.random().toString(36).substring(7);
-          const fileName = `Inv_${shortId}.pdf`; 
-          const filePath = path.join(process.cwd(), fileName);
-          
-          lead.invoiceNo = `INV-${shortId.toUpperCase()}`;
-          lead.invoiceDate = new Date().toLocaleDateString('en-IN');
-
-          const html = getInvoiceTemplate(lead); 
-          await generatePDF(html, filePath);
-          
-          const cloudUrl = await uploadToR2(filePath, fileName);
-          
-          finalContent = String(cloudUrl).trim(); 
-          contentType = "pdf"; 
-          // We store the message as a caption so the worker can send it with the file
-          notificationCaption = messages[4];
-          
-          console.log(`🔗 PDF URL Generated: ${finalContent}`);
-        } catch (pdfErr) {
-          console.error("PDF Flow failed, falling back to text:", pdfErr);
-          finalContent = messages[4];
-          contentType = "text";
-        }
-      }
-
-      const result = await db.collection("notifications").insertOne({
+      // --- STEP 2: ALWAYS SEND THE TEXT MESSAGE FIRST ---
+      const textResult = await db.collection("notifications").insertOne({
         from: "Kondaas_System",
         to: whatsappTo,
         mode: "whatsapp",
-        content: new Binary(Buffer.from(finalContent, 'utf8')),
-        contentType: contentType,
-        caption: notificationCaption, // Pass the text message here
+        content: new Binary(Buffer.from(messages[scenarioType], 'utf8')),
+        contentType: "text",
         status: "pending",
         createdAt: new Date()
       });
 
-      processWhatsAppNotification(result.insertedId).catch(err => console.error(err));
+      processWhatsAppNotification(textResult.insertedId).catch(err => console.error(err));
 
-      return c.json({ message: `Scenario ${scenarioType} processed`, id: result.insertedId });
+      // --- STEP 3: IF SCENARIO 4, FETCH FORM DATA & GENERATE PDF ---
+      if (scenarioType === 4) {
+        (async () => {
+          try {
+            console.log("📄 Heavy Work: Fetching Form Data & Generating PDF...");
+            
+            // Fetch technical data from FORMS collection specifically for the PDF
+            const formData = await db.collection("forms").findOne({ mobileNumber: customerMobile });
+            
+            if (!formData) {
+              console.error("❌ PDF Cancelled: No entry found in 'forms' collection for this mobile.");
+              return;
+            }
+
+            const shortId = Math.random().toString(36).substring(7);
+            const fileName = `Inv_${shortId}.pdf`; 
+            const filePath = path.join(process.cwd(), fileName);
+            
+            // Add invoice details to the formData object for the template
+            formData.invoiceNo = `INV-${shortId.toUpperCase()}`;
+            formData.invoiceDate = new Date().toLocaleDateString('en-IN');
+
+            // Pass the rich FORM data to the template
+            const html = getInvoiceTemplate(formData); 
+            await generatePDF(html, filePath);
+            
+            await uploadToR2(filePath, fileName);
+
+            fs.unlink(filePath, (err) => {
+              if (err) console.error("❌ Error deleting local PDF:", err.message);
+              else console.log(`🗑️ Successfully cleaned up local file: ${fileName}`);
+            });
+
+            const publicBaseUrl = "https://pub-779720c6e2884996a1a81145da8c5bea.r2.dev";
+            const finalPublicUrl = `${publicBaseUrl}/${fileName}`;
+
+            const pdfResult = await db.collection("notifications").insertOne({
+              from: "Kondaas_System",
+              to: whatsappTo,
+              mode: "whatsapp",
+              content: new Binary(Buffer.from(finalPublicUrl.trim(), 'utf8')),
+              contentType: "pdf",
+              caption: "Here is your formal invoice. Thank you!",
+              status: "pending",
+              createdAt: new Date()
+            });
+
+            processWhatsAppNotification(pdfResult.insertedId).catch(err => console.error(err));
+          } catch (pdfErr) {
+            console.error("❌ Background PDF Work Failed:", pdfErr);
+          }
+        })();
+      }
+
+      return c.json({ 
+        message: `Scenario ${scenarioType} message sent. PDF processing in background.`, 
+        id: textResult.insertedId 
+      });
     });
   } catch (err) {
     return c.json({ error: err.message }, 500);
