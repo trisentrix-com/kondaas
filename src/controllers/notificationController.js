@@ -81,18 +81,16 @@ const processWhatsAppNotification = async (notificationId) => {
  */
 export const triggerScenarioNotification = async (c) => {
   try {
-    const { surveyorNumber, customerMobile, scenarioType, eta } = await c.req.json();
-
+    const { surveyorNumber, customerMobile, scenarioType, eta, mapsUrl } = await c.req.json();
     return await withDatabase(MONGODB_URI, async (db) => {
       // --- STEP 1: VERIFY EXISTENCE IN LEADS ---
       const lead = await db.collection("lead").findOne({ mobile: customerMobile });
       if (!lead) return c.json({ error: "Lead not found in leads collection" }, 404);
-
       const customerName = lead.name || "Customer";
       const whatsappTo = lead.whatsappNo || lead.mobile;
       
       const messages = {
-        1: `Hello ${customerName}, your Kondaas technician has started. Arrival in ${eta || 'soon'} min. Contact: ${surveyorNumber}.`,
+        1: `Hello ${customerName}, your Kondaas technician has started. Arrival in ${eta || 'soon'} min. Contact: ${surveyorNumber}.${mapsUrl ? `\n\n📍 Track Location: ${mapsUrl}` : ''}`,
         2: `Hello ${customerName}, your technician is just 300 meters away!`,
         3: `Hello ${customerName}, your technician has arrived.`,
         4: `Hello ${customerName}, your technician has completed the work. Thank you for choosing Kondaas!`
@@ -108,7 +106,6 @@ export const triggerScenarioNotification = async (c) => {
         status: "pending",
         createdAt: new Date()
       });
-
       processWhatsAppNotification(textResult.insertedId).catch(err => console.error(err));
 
       // --- STEP 3: IF SCENARIO 4, FETCH FORM DATA & GENERATE PDF ---
@@ -117,28 +114,23 @@ export const triggerScenarioNotification = async (c) => {
           try {
             console.log("📄 Heavy Work: Fetching Form Data & Generating PDF...");
             
-            // Fetch technical data from FORMS collection specifically for the PDF
             const formData = await db.collection("forms").findOne({ mobileNumber: customerMobile });
             
             if (!formData) {
               console.error("❌ PDF Cancelled: No entry found in 'forms' collection for this mobile.");
               return;
             }
-
             const shortId = Math.random().toString(36).substring(7);
             const fileName = `Inv_${shortId}.pdf`; 
             const filePath = path.join(process.cwd(), fileName);
             
-            // Add invoice details to the formData object for the template
             formData.invoiceNo = `INV-${shortId.toUpperCase()}`;
             formData.invoiceDate = new Date().toLocaleDateString('en-IN');
 
-            // Pass the rich FORM data to the template
             const html = getInvoiceTemplate(formData); 
             await generatePDF(html, filePath);
             
             await uploadToR2(filePath, fileName);
-
             fs.unlink(filePath, (err) => {
               if (err) console.error("❌ Error deleting local PDF:", err.message);
               else console.log(`🗑️ Successfully cleaned up local file: ${fileName}`);
@@ -157,7 +149,6 @@ export const triggerScenarioNotification = async (c) => {
               status: "pending",
               createdAt: new Date()
             });
-
             processWhatsAppNotification(pdfResult.insertedId).catch(err => console.error(err));
           } catch (pdfErr) {
             console.error("❌ Background PDF Work Failed:", pdfErr);
