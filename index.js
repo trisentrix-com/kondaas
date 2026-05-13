@@ -8,6 +8,7 @@ import orderRoutes from './src/routes/orderRoutes.js';
 import templateRoutes from './src/routes/templateRoutes.js';
 import notificationRoutes from './src/routes/notificationRoutes.js';
 import solarmanRoutes from './src/routes/solarmanRoutes.js';
+import savingsRoutes from './src/routes/savingsRoutes.js';
 
 const app = new Hono();
 
@@ -20,6 +21,7 @@ app.route('/order', orderRoutes);
 app.route('/template', templateRoutes);
 app.route('/notification', notificationRoutes);
 app.route('/solarman', solarmanRoutes);
+app.route('/savings', savingsRoutes);
 
 
 const port = 8080;

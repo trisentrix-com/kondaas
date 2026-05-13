@@ -1,4 +1,5 @@
 import { withDatabase, getSystemKeys } from '../utils/config.js';
+import { SolarParser } from '../utils/SolarParser.js';
 
 const SOLARMAN_BASE_URL = "https://globalapi.solarmanpv.com";
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -217,56 +218,55 @@ export const getSolarmanHistory = async (c) => {
 export const saveUserDetails = async (c) => {
   try {
     const data = await c.req.json();
-    
     const mobile = data.UserInfo?.phoneNo;
-    if (!mobile) {
-      return c.json({ error: "Mobile number is required" }, 400);
-    }
+    if (!mobile) return c.json({ error: "Mobile number is required" }, 400);
 
     return await withDatabase(MONGODB_URI, async (db) => {
-
-      // ✅ Only update fields that are actually present in the request
       const setFields = {};
 
+      // Map basic info
       if (data.AppInfo) setFields.AppInfo = data.AppInfo;
       if (data.PlatformInfo) setFields.PlatformInfo = data.PlatformInfo;
-      if (data.devicelist) setFields.devicelist = data.devicelist;
       setFields.updatedAt = new Date();
 
-      // ✅ UserInfo - field by field, skip undefined/null values
       if (data.UserInfo) {
-        const userInfo = data.UserInfo;
-        if (userInfo.phoneNo)       setFields["UserInfo.phoneNo"]       = userInfo.phoneNo;
-        if (userInfo.email)         setFields["UserInfo.email"]         = userInfo.email;
-        if (userInfo.password)      setFields["UserInfo.password"]      = userInfo.password;
-        if (userInfo.plainPassword) setFields["UserInfo.plainPassword"] = userInfo.plainPassword;
-        if (userInfo.fcmToken)      setFields["UserInfo.fcmToken"]      = userInfo.fcmToken;
-        if (userInfo.name)          setFields["UserInfo.name"]          = userInfo.name;
-        // Add any other UserInfo fields here
+        const ui = data.UserInfo;
+        if (ui.phoneNo)       setFields["UserInfo.phoneNo"]  = ui.phoneNo;
+        if (ui.email)         setFields["UserInfo.email"]    = ui.email;
+        if (ui.password)      setFields["UserInfo.password"] = ui.password;
+        if (ui.name)          setFields["UserInfo.name"]     = ui.name;
       }
 
-      const result = await db.collection("userDetails").updateOne(
+      // 🚀 AUTO-DETECTION: Use SolarParser instead of trusting user input
+      if (data.devicelist && data.devicelist[0]) {
+        const rawStation = data.devicelist[0];
+        const parsed = SolarParser.parse(rawStation);
+        
+        if (parsed.state) setFields["UserInfo.state"] = parsed.state;
+        
+        setFields.devicelist = [{
+          ...rawStation,
+          operationalTimestamp: parsed.operationalTimestamp,
+          stationId: parsed.stationId,
+          capacityKw: parsed.capacityKw
+        }];
+      }
+
+      await db.collection("userDetails").updateOne(
         { _id: mobile },
         { $set: setFields }, 
         { upsert: true }
       );
 
-      return c.json({ 
-        success: true, 
-        message: result.upsertedCount > 0 ? "User created" : "User details updated",
-        id: mobile 
-      });
+      return c.json({ success: true, message: "Profile saved via SolarParser" });
     });
-
   } catch (err) {
-    console.error("❌ Error saving user details:", err.message);
     return c.json({ error: err.message }, 500);
   }
 };
 
 export const getUser = async (c) => {
   try {
-    // Getting the phone number from the body as requested
     const { phoneNo } = await c.req.json();
 
     if (!phoneNo) {
@@ -274,16 +274,14 @@ export const getUser = async (c) => {
     }
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      // Searching the userDetails collection by the mobile anchor (_id)
       const user = await db.collection("userDetails").findOne({ _id: phoneNo });
 
       if (!user) {
         return c.json({ error: "User profile not found" }, 404);
       }
 
-      
-    
-
+      // We return the whole document so the app can access UserInfo.state, 
+      // UserInfo.email, and the devicelist for the dashboard.
       return c.json({
         success: true,
         data: user
@@ -294,3 +292,79 @@ export const getUser = async (c) => {
     return c.json({ error: err.message }, 500);
   }
 };
+
+
+export const seedTariffSlabs = async (c) => {
+  try {
+    return await withDatabase(MONGODB_URI, async (db) => {
+      const collection = db.collection("solarExportSlabs");
+
+      // 1. TAMIL NADU DATA
+      const tamilNaduData = {
+        state: "Tamil Nadu",
+        category: "solar_export_credit",
+        description: "Monthly surplus solar export credit slabs",
+        displayName: "Tamil Nadu",
+        effectiveFrom: new Date("2020-01-01T00:00:00Z"),
+        effectiveTo: null,
+        type: "progressive",
+        slabs: [
+          { from: 1, to: 100, rate: 0 },
+          { from: 101, to: 200, rate: 2.35 },
+          { from: 201, to: 400, rate: 4.7 },
+          { from: 401, to: 500, rate: 6.3 },
+          { from: 501, to: 600, rate: 8.4 },
+          { from: 601, to: 800, rate: 9.45 },
+          { from: 801, to: 1000, rate: 10.5 },
+          { from: 1001, to: null, rate: 11.55 }
+        ],
+        updatedAt: new Date("2026-01-01T14:00:00Z")
+      };
+
+      // 2. KERALA DATA (More complex structure)
+      const keralaData = {
+        state: "kerala",
+        category: "domestic_consumption",
+        description: "KSEB LT-I Domestic tariff slabs (monthly basis) - KSERC order 2025-2027",
+        displayName: "Kerala (KSEB) - Domestic LT",
+        effectiveFrom: "2025-04-01",
+        effectiveTo: "2027-03-31",
+        type: "telescopic + non-telescopic",
+        fixedCharges: {
+          notes: "Fixed charges in ₹/consumer/month, vary by connected load and phase.",
+          single_phase: { up_to_250: 160, above_250: 200 },
+          three_phase: { up_to_250: 240, above_250: 310 }
+        },
+        slabs: {
+          telescopic_up_to_250: [
+            { from: 0, to: 50, rate: 3.35 },
+            { from: 51, to: 100, rate: 4.25 },
+            { from: 101, to: 150, rate: 5.35 },
+            { from: 151, to: 200, rate: 7.2 },
+            { from: 201, to: 250, rate: 8.5 }
+          ],
+          non_telescopic_above_250: [
+            { from: 251, to: 300, rate: 6.75 },
+            { from: 301, to: 350, rate: 7.6 },
+            { from: 351, to: 400, rate: 7.95 },
+            { from: 401, to: 500, rate: 8.25 },
+            { from: 501, to: null, rate: 9.2 }
+          ]
+        },
+        source: "KSERC tariff order 2025-2027 (effective April 2025)",
+        updatedAt: new Date("2026-02-16T18:30:00Z"),
+        updatedBy: "admin-ezhil"
+      };
+
+      // Execute Upserts
+      await collection.updateOne({ _id: "tamil-nadu" }, { $set: tamilNaduData }, { upsert: true });
+      await collection.updateOne({ _id: "kerala" }, { $set: keralaData }, { upsert: true });
+
+      return c.json({ success: true, message: "Tariff slabs updated successfully" });
+    });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+};
+
+
