@@ -9,6 +9,8 @@ import templateRoutes from './src/routes/templateRoutes.js';
 import notificationRoutes from './src/routes/notificationRoutes.js';
 import solarmanRoutes from './src/routes/solarmanRoutes.js';
 import savingsRoutes from './src/routes/savingsRoutes.js';
+import ticketRoutes from './src/routes/ticketRoutes.js';
+import referralRoutes from './src/routes/referralRoutes.js';
 
 const app = new Hono();
 
@@ -22,7 +24,8 @@ app.route('/template', templateRoutes);
 app.route('/notification', notificationRoutes);
 app.route('/solarman', solarmanRoutes);
 app.route('/savings', savingsRoutes);
-
+app.route('/ticket', ticketRoutes);
+app.route('/referral', referralRoutes);
 
 const port = 8080;
 

@@ -129,6 +129,7 @@ export const calculateUserSavings = async (c) => {
 
       if (!startTs) return c.json({ error: "No operational date found" }, 404);
 
+      
       // 6. Historical Monthly Calculation Loop
       const startDate = new Date(startTs * 1000);
       const now = new Date();
@@ -136,10 +137,8 @@ export const calculateUserSavings = async (c) => {
       let cumulativeUnits = 0;
       let cumulativeCost = 0;
 
-      // Align execution target directly to day 1 of installation milestone month
       let cursor = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
 
-      // 📅 Chronological month iteration tracking bounds ensures current month is evaluated
       while (cursor <= now) {
         const year = cursor.getFullYear();
         const month = String(cursor.getMonth() + 1).padStart(2, '0');
@@ -155,23 +154,37 @@ export const calculateUserSavings = async (c) => {
           getKeys: getSystemKeys
         });
 
-        // Capture raw production metrics directly from the source endpoint response
         const rawUnits = Number(solarResponse?.stationDataItems?.[0]?.generationValue || 0);
-        
-        // 🛡️ SECURITY LOCK: Safe-store pristine value right into the aggregator before passing to calculator reference spaces
         cumulativeUnits += rawUnits;
 
-        // Execute billing progressive math calculation safely
+        // 🔍 LIVE DEBUG CONSOLE: Catching the current month's math in action
+        if (monthKey === "2026-05") {
+          console.log("\n=================== 🕵️‍♂️ CURRENT MONTH DEBUG LOG ===================");
+          console.log("📍 Target Month Key:  ", monthKey);
+          console.log("📊 Raw Units Received:", rawUnits);
+          console.log("📑 State Logged:      ", parsed.state);
+          console.log("🔑 Generated StateId: ", stateId);
+          console.log("🗂️ Tariff Doc From DB:", tariffTemplate ? "FOUND (True)" : "NOT FOUND (False)");
+          
+          if (tariffTemplate) {
+            console.log("📜 DB Tariff Type:    ", tariffTemplate.type);
+            console.log("📦 Total Rule Blocks: ", tariffTemplate.billingRules?.length || 0);
+          }
+
+          // Force check the calculator utility's direct execution
+          const testCost = SolarExportCalculator.calculateMonthlyCredit(rawUnits, tariffTemplate, monthKey);
+          console.log("💰 Final Math Output: ", testCost);
+          console.log("==================================================================\n");
+        }
+
         const cost = SolarExportCalculator.calculateMonthlyCredit(rawUnits, tariffTemplate, monthKey);
 
         monthlyRecords[monthKey] = {
-          units: Number(rawUnits.toFixed(2)), // Keep view data fully pristine for mobile UI
+          units: Number(rawUnits.toFixed(2)),
           cost: Number(cost.toFixed(2))
         };
 
         cumulativeCost += cost;
-
-        // Move to the next calendar month increment
         cursor.setMonth(cursor.getMonth() + 1);
       }
 
@@ -193,7 +206,7 @@ export const calculateUserSavings = async (c) => {
             body: JSON.stringify({ stationId: Number(stationId) }) // Uses stationId directly
           }
         );
-
+ 
         const realTimeJson = await realTimeResponse.json();
 
         // Map generationTotal directly off the response object payload root properties
