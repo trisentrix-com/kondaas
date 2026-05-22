@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
+import 'dotenv/config';
 
 import locationRoutes from './src/routes/locationRoutes.js';
 import userRoutes from './src/routes/userRoutes.js';

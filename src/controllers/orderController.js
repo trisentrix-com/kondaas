@@ -1,6 +1,8 @@
 import { withDatabase, getSystemKeys } from '../utils/config.js';
+import { GoogleAuth } from 'google-auth-library';
 
 const MONGODB_URI = process.env.MONGODB_URI;
+
 
 
 
@@ -25,20 +27,30 @@ const getISTDateStrings = () => {
 };
 
 // 1. Updated FCM function to include kilovolt in the message
-const sendFCMNotification = async (deviceToken, customerData, bearerToken, leadId, kilovolt, address) => {
+const sendFCMNotification = async (deviceToken, customerData, leadId, kilovolt, address) => {
   try {
-    if (!deviceToken || !bearerToken) return false;
+    if (!deviceToken) return false;
+
+    // 🤖 AUTOMATION MAGIC: This automatically reads aws-wif.json via your environment variable
+    const auth = new GoogleAuth({
+      scopes: ['https://www.googleapis.com/auth/firebase.messaging']
+    });
+    const client = await auth.getClient();
+    const tokenResponse = await client.getAccessToken();
+    const accessToken = tokenResponse.token;
+
+    if (!accessToken) {
+      console.error("❌ Failed to automatically generate GCP access token.");
+      return false;
+    }
 
     const kvInfo = kilovolt ? ` [${kilovolt}]` : "";
     const addrInfo = address ? ` at ${address}` : "";
-    // Prepare the string once to ensure consistency
     const statusBody = `Customer: ${customerData.name || "New"}${kvInfo}${addrInfo}. Tap to accept.`;
 
     const payload = {
       message: {
         token: deviceToken.trim(),
-        // We REMOVE the global 'notification' key here.
-        // This stops the "N/A" ghost notification from the System Brain.
         android: {
           priority: "high",
           notification: {
@@ -66,7 +78,7 @@ const sendFCMNotification = async (deviceToken, customerData, bearerToken, leadI
     const response = await fetch("https://fcm.googleapis.com/v1/projects/kondaas-5dfaa/messages:send", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${bearerToken.trim()}`,
+        "Authorization": `Bearer ${accessToken}`, // Using our newly automated token!
         "Content-Type": "application/json; charset=UTF-8"
       },
       body: JSON.stringify(payload)
@@ -88,15 +100,16 @@ export const addOrder = async (c) => {
       const keys = await getSystemKeys(db);
       const { todayDateOnly, todayKey } = getISTDateStrings();
 
-      // 1. New Flowtrix Config from your KT
-      const boardId = "SJdfRnCr7DdBpJZ6s";
-      const newEntryListId = "X97mPsTtdgzCupAiG";
-      const flowtrixToken = "hTDnleH7ZhpcRutIf5eor19xjn6OToGF6Ss2X7groaT";
+      // 🔄 UPDATED: Production Board & List Setup for Administration Board
+      const boardId = "dbiYtzsTX7BaSX3pk";
+      const newEntryListId = "xSfLcnhqcz7h56hPz"; // New leads list
+      const flowtrixToken = keys.flowtrix?.boardToken || "fjfOx8r_zrkmU6A4XjBeXqwRvVAlTB7c2eklkav4PHj"; // Fallback token
       
       let flowtrixCardId = null;
 
-      // 2. Sync to Flowtrix FIRST to get the Card ID
+      // Sync to Flowtrix FIRST to get the Card ID
       try {
+        // Port kept at 8080 for internal docker network communications
         const flowtrixResponse = await fetch(`http://flowtrix:8080/api/boards/${boardId}/lists/${newEntryListId}/cards`, {
           method: "POST",
           headers: {
@@ -104,16 +117,14 @@ export const addOrder = async (c) => {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            title: `${name} - ${mobile}`,
-            description: `New Entry\n Phone: ${mobile}\n Name: ${name}`,
+            title: `${name}-${mobile}`,
             authorId: "Lxc9EwKM5j4ov95ZT",
-            swimlaneId: "pomXibpEQxQYji8pS"
+            swimlaneId: "rF336Crux7KAqNXmQ" // New Administration Swimlane ID
           })
         });
 
         if (flowtrixResponse.ok) {
           const responseData = await flowtrixResponse.json();
-          // This is the 'fecMFhX3vDPkuCkHF' style ID we need for the PUT requests later
           flowtrixCardId = responseData._id; 
           console.log("✅ Flowtrix Board Sync Successful. Card ID:", flowtrixCardId);
         }
@@ -121,7 +132,7 @@ export const addOrder = async (c) => {
         console.error("❌ Flowtrix Sync failed:", syncErr.message);
       }
 
-      // 3. Save Lead to MongoDB (Including the captured Card ID)
+      // Save Lead to MongoDB (Including the captured Card ID)
       const result = await db.collection("lead").insertOne({
         name,
         mobile,
@@ -136,13 +147,13 @@ export const addOrder = async (c) => {
         kilovolt: kilovolt || null,
         status: "unaccepted",
         flowtrixCardId: flowtrixCardId,
-        currentListId: "X97mPsTtdgzCupAiG", 
+        currentListId: newEntryListId, // Initialized with xSfLcnhqcz7h56hPz
         createdAt: todayDateOnly,
       });
 
       const leadId = result.insertedId;
 
-      // 4. Notification Logic (FCM)
+      // Notification Logic (FCM)
       if (latitude && longitude) {
         const activeWorkers = await db.collection("locations")
           .find({ [todayKey]: { $exists: true } }).toArray();
@@ -165,12 +176,11 @@ export const addOrder = async (c) => {
             workersWithDistance.sort((a, b) => a.distance - b.distance);
             
             const targetFcmToken = keys.firebase?.testFcmToken; 
-            const bearerToken = keys.firebase?.fcmToken;
 
+            // 🤖 CLEANER & AUTOMATED: Calling the function without passing a manual token parameter
             await sendFCMNotification(
               targetFcmToken, 
               { name, mobile }, 
-              bearerToken, 
               leadId, 
               kilovolt, 
               address
@@ -193,20 +203,30 @@ export const addOrder = async (c) => {
 
 export const syncToFlowtrix = async (c) => {
   try {
-    const { customerMobile, surveyorNumber, status } = await c.req.json();
+    const body = await c.req.json();
+    const { 
+      customerMobile, 
+      surveyorNumber, 
+      status, 
+      receivedAt, // Epoch integer from frontend for Accepted
+      startAt,    // Epoch integer from frontend for InProgress
+      dueAt,      // Epoch integer from frontend for InProgress
+      endAt       // Epoch integer from frontend for Completed
+    } = body;
 
     const listIdMap = {
-      "accepted": "HcaGuqYyuLcSxGokt",
-      "inprogress": "AXApNwXWvJLejTTAW",
-      "completed": "8K5rFTuQNpsS5Esdk",
-      "rejected": "AkgGgQaobFNgR2Ymq"
+      "new leads": "xSfLcnhqcz7h56hPz",
+      "accepted": "XKJT3KxZr77o9Kmxa",
+      "inprogress": "7TrNeSYhfHipPqtch",
+      "completed": "zu4QHWmQQ2ydjQtrr"
     };
 
     const targetListId = listIdMap[status.toLowerCase()];
-    if (!targetListId) return c.json({ error: "Invalid status" }, 400);
+    if (!targetListId) return c.json({ error: "Invalid or unsupported status for standard sync" }, 400);
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      // 1. Find the lead (Trying both String and Number types to be safe)
+      const keys = await getSystemKeys(db);
+      
       const lead = await db.collection("lead").findOne({ 
         $or: [
           { mobile: customerMobile }, 
@@ -220,36 +240,56 @@ export const syncToFlowtrix = async (c) => {
         return c.json({ error: "Lead not found in database." }, 404);
       }
 
-      const currentOriginId = lead.currentListId || "X97mPsTtdgzCupAiG";
+      const currentOriginId = lead.currentListId || "xSfLcnhqcz7h56hPz";
       console.log(`📡 Moving from: ${currentOriginId} -> To: ${targetListId}`);
 
-      const boardId = "SJdfRnCr7DdBpJZ6s";
-      const flowtrixToken = "hTDnleH7ZhpcRutIf5eor19xjn6OToGF6Ss2X7groaT";
+      const boardId = "dbiYtzsTX7BaSX3pk";
+      const flowtrixToken = keys.flowtrix?.boardToken || "SDkKCXbBAN3tf17Wwa-YPAl6S5dqUS6v_TFWBvaKLwe";
 
-      // 2. Flowtrix API Call
+      // 📦 Build the baseline Flowtrix payload
+      const flowtrixBody = {
+        listId: targetListId, 
+        description: `${status.toUpperCase()}/ surveyor number - ${surveyorNumber}`
+      };
+
+      // 🔄 Dynamically convert and attach frontend Epoch timestamps to Flowtrix payload ONLY
+      const currentStatus = status.toLowerCase();
+      
+      if (currentStatus === "accepted" && receivedAt) {
+        flowtrixBody.receivedAt = new Date(Number(receivedAt)).toISOString();
+      } 
+      else if (currentStatus === "inprogress") {
+        if (startAt) flowtrixBody.startAt = new Date(Number(startAt)).toISOString();
+        if (dueAt) flowtrixBody.dueAt = new Date(Number(dueAt)).toISOString();
+      } 
+      else if (currentStatus === "completed" && endAt) {
+        flowtrixBody.endAt = new Date(Number(endAt)).toISOString();
+      }
+
+      // Flowtrix API Call (Port 8080)
       const response = await fetch(`http://flowtrix:8080/api/boards/${boardId}/lists/${currentOriginId}/cards/${lead.flowtrixCardId}`, {
         method: "PUT",
         headers: {
           "Authorization": `Bearer ${flowtrixToken}`,
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          listId: targetListId, 
-          description: `${status.toUpperCase()} Surveyor: ${surveyorNumber}`
-        })
+        body: JSON.stringify(flowtrixBody)
       });
 
       if (response.ok) {
-        // 3. SECURE DB UPDATE: Use the unique _id from the lead we just found
+        // 🔒 SAFE DATABASE UPDATE: Keeps your exact original schema structure
         const updateResult = await db.collection("lead").updateOne(
           { _id: lead._id }, 
-          { $set: { currentListId: targetListId } }
+          { 
+            $set: { 
+              currentListId: targetListId, 
+              status: status.toLowerCase() 
+            } 
+          }
         );
 
         if (updateResult.modifiedCount > 0) {
           console.log(`✅ DB Success: currentListId updated to ${targetListId}`);
-        } else {
-          console.warn("⚠️ Flowtrix moved, but DB already had this List ID.");
         }
 
         return c.json({ success: true, message: `Moved to ${status}` });
@@ -265,7 +305,90 @@ export const syncToFlowtrix = async (c) => {
   }
 };
 
+export const rejectOrder = async (c) => {
+  try {
+    const body = await c.req.json();
+    const { 
+      customerMobile, 
+      surveyorNumber, 
+      comment,
+      receivedAt 
+    } = body;
 
+    if (!comment) {
+      return c.json({ error: "Rejection reason (comment) is required" }, 400);
+    }
+
+    const rejectListId = "KqQcQRx6HubqfH3hz"; 
+
+    return await withDatabase(MONGODB_URI, async (db) => {
+      const keys = await getSystemKeys(db);
+      
+      const lead = await db.collection("lead").findOne({ 
+        $or: [
+          { mobile: customerMobile }, 
+          { mobile: String(customerMobile) },
+          { mobile: Number(customerMobile) }
+        ] 
+      });
+
+      if (!lead || !lead.flowtrixCardId) {
+        console.error(`❌ Lead not found for rejection mobile: ${customerMobile}`);
+        return c.json({ error: "Lead not found in database." }, 404);
+      }
+
+      const currentOriginId = lead.currentListId || "xSfLcnhqcz7h56hPz";
+      console.log(`📡 Rejecting Lead: Moving from ${currentOriginId} -> To: ${rejectListId}`);
+
+      const boardId = "dbiYtzsTX7BaSX3pk";
+      const flowtrixToken = keys.flowtrix?.boardToken || "SDkKCXbBAN3tf17Wwa-YPAl6S5dqUS6v_TFWBvaKLwe";
+
+      // 📦 Build the rejection payload for Flowtrix external boards
+      const flowtrixBody = {
+        listId: rejectListId,
+        description: `Rejected/ surveyor number - ${surveyorNumber || 'N/A'}`,
+        comment: comment
+      };
+
+      if (receivedAt) {
+        flowtrixBody.receivedAt = new Date(Number(receivedAt)).toISOString();
+      }
+
+      // Flowtrix API Call (Port 8080)
+      const response = await fetch(`http://flowtrix:8080/api/boards/${boardId}/lists/${currentOriginId}/cards/${lead.flowtrixCardId}`, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${flowtrixToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(flowtrixBody)
+      });
+
+      if (response.ok) {
+        // 🔒 SAFE DATABASE UPDATE: Modifies tracking targets without adding timestamp data
+        await db.collection("lead").updateOne(
+          { _id: lead._id }, 
+          { 
+            $set: { 
+              currentListId: rejectListId, 
+              status: "rejected"
+            } 
+          }
+        );
+
+        console.log(`✅ Lead for mobile ${customerMobile} marked as Rejected.`);
+        return c.json({ success: true, message: "Order rejected and synced successfully" });
+      } else {
+        const errorText = await response.text();
+        console.error("❌ Flowtrix Rejection Sync Error:", errorText);
+        return c.json({ error: "Flowtrix rejection update failed", details: errorText }, 500);
+      }
+    });
+  } catch (err) {
+    console.error("❌ RejectOrder Exception Error:", err.message);
+    return c.json({ error: "Internal server error" }, 500);
+  }
+};
 
 
 
