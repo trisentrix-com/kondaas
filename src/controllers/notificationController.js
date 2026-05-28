@@ -53,7 +53,7 @@ const processWhatsAppNotification = async (notificationId) => {
           { _id: notificationId },
           { $set: { status: "completed", completedAt: new Date() } }
         );
-        console.log(`✅ WhatsApp sent to ${formattedNumber}`);
+        
       } else {
         // Log the error body to see why the API rejected it (helps with 500 errors)
         const errorData = await response.text();

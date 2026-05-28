@@ -81,6 +81,10 @@ export const startQueueRunner = () => {
             await processAllCustomersWeeklyJobs(db, job);
             break;
 
+          case "MONTHLY_MASTER_SOLAR_SUMMARY": // ✅ Added monthly routing task
+            await processAllCustomersMonthlyJobs(db, job);
+            break;
+
           case "SURVEYOR_CASCADING_DISPATCH":
             await handleCascadingDispatchJob(db, job);
             break;
@@ -118,7 +122,7 @@ const handleCascadingDispatchJob = async (db, job) => {
     }
 
     // 3. Out-of-bounds check: If we've exhausted our entire list of local surveyors
-    if (currentIndex >= surveyorsList.length) {
+    if (currentIndex >= surveyorsList.length) {                  
       console.log(`❌ All surveyors exhausted for Lead ${leadId}. None accepted.`);
       await db.collection("jobs_queue").updateOne(
         { _id: job._id },
@@ -160,7 +164,7 @@ const handleCascadingDispatchJob = async (db, job) => {
       console.log(`⚠️ Could not transmit notification directly to phone (missing token/profile for ${targetSurveyor.phoneNo}).`);
     }
 
-    // 6. Schedule next countdown window (Now + 30 Seconds)
+    
     const nextTickTime = new Date();
     nextTickTime.setSeconds(nextTickTime.getSeconds() + 30);
 
@@ -188,6 +192,7 @@ const handleCascadingDispatchJob = async (db, job) => {
 
 const processAllCustomersWeeklyJobs = async (db, masterJob) => {
   try {
+    // 🔍 Pull users with registered devices
     const users = await db.collection("userDetails").find({ "PlatformInfo.devices.0": { $exists: true } }).toArray();
     console.log(`📋 Found ${users.length} users with registered devices in local userDetails collection.`);
 
@@ -207,6 +212,7 @@ const processAllCustomersWeeklyJobs = async (db, masterJob) => {
       const phoneNo = user._id;
       const stations = user.devicelist || [];
       
+      // 📱 EXTRACT ALL TOKENS
       let tokensToBroadcast = [];
       if (user.PlatformInfo && Array.isArray(user.PlatformInfo.devices)) {
         tokensToBroadcast = user.PlatformInfo.devices
@@ -252,12 +258,13 @@ const processAllCustomersWeeklyJobs = async (db, masterJob) => {
         }
       }
 
-      // 🚀 TRANSMIT TO ALL REGISTERED TOKENS VIA SEND-EACH MULTICAST PACKET (REMOVED CUSTOM SOUND)
+      // 🚀 TRANSMIT TO ALL REGISTERED TOKENS VIA SEND-EACH MULTICAST PACKET
       if (processedStationsCount > 0) {
         totalUserWeeklyUnits = Number(totalUserWeeklyUnits.toFixed(2));
         const statusTitle = "☀️ Your Weekly Solar Report is Ready!";
         const finalNotificationBody = `Your weekly summary breakdown:\n${stationBreakdownText}Total Generation: ${totalUserWeeklyUnits} Units`;
         
+        // Map every token into a dual-platform payload layout (Android + iOS Default Sounds)
         const messagesPayload = tokensToBroadcast.map(token => ({
           token: token.trim(),
           notification: {
@@ -267,9 +274,17 @@ const processAllCustomersWeeklyJobs = async (db, masterJob) => {
           android: {
             priority: "high",
             notification: {
-              // 🧼 Removed sound: "kondaas" here so it uses the standard phone default alert
-              channelId: "weekly_summary_channel",
+              channelId: "weekly_summary_channel_v1", // Clean channel for standard alerts
+              sound: "default",                        // Android Native Default Sound
               clickAction: "WEEKLY_SUMMARY_NOTIFICATION_ACTION",
+            }
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: "default",                      // ✅ iOS Native Default Sound
+                category: "WEEKLY_SUMMARY_NOTIFICATION_ACTION"
+              }
             }
           },
           data: {
@@ -287,6 +302,7 @@ const processAllCustomersWeeklyJobs = async (db, masterJob) => {
           const batchResponse = await admin.messaging().sendEach(messagesPayload);
           console.log(`📋 Multicast results for ${phoneNo}: [${batchResponse.successCount} passed / ${batchResponse.failureCount} failed]`);
           
+          // 🧼 SELF-CLEANING RECOVERY MECHANISM
           for (let index = 0; index < batchResponse.responses.length; index++) {
             const singleResponse = batchResponse.responses[index];
             
@@ -307,7 +323,7 @@ const processAllCustomersWeeklyJobs = async (db, masterJob) => {
                     } 
                   }
                 );
-                console.log(`✅ Successfully scrubbed invalid token for user ${phoneNo} from MongoDB.`);
+                
               }
             }
           }
@@ -337,6 +353,172 @@ const processAllCustomersWeeklyJobs = async (db, masterJob) => {
 
   } catch (error) {
     console.error("❌ Critical breakdown in Master Loop processing:", error.message);
+    await db.collection("jobs_queue").updateOne(
+      { _id: masterJob._id },
+      { $set: { status: "pending", lockedAt: null } }
+    );
+  }
+};
+
+// 🗓️ ✅ NEW MONTHLY BACKEND TRACKING SYSTEM (TESTING SETUP)
+const processAllCustomersMonthlyJobs = async (db, masterJob) => {
+  try {
+    const users = await db.collection("userDetails").find({ "PlatformInfo.devices.0": { $exists: true } }).toArray();
+    console.log(`📋 Found ${users.length} users with registered devices in local userDetails collection.`);
+
+    // 📅 DYNAMIC TESTING RANGE: 1st day of current month until today's date
+    const today = new Date();
+    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    const startTime = startOfMonth.toISOString().split('T')[0]; 
+    const endTime = today.toISOString().split('T')[0];
+
+    console.log(`⏳ Monthly summary querying date range parameters: [From: ${startTime} To: ${endTime}]`);
+
+    for (const user of users) {
+      const phoneNo = user._id;
+      const stations = user.devicelist || [];
+      
+      // 📱 EXTRACT TOKENS
+      let tokensToBroadcast = [];
+      if (user.PlatformInfo && Array.isArray(user.PlatformInfo.devices)) {
+        tokensToBroadcast = user.PlatformInfo.devices
+          .map(d => d.fcmToken)
+          .filter(token => token && token.trim().length > 0);
+      }
+
+      if (tokensToBroadcast.length === 0) {
+        console.log(`ℹ️ User ${phoneNo} skipped: No active tokens inside device array.`);
+        continue;
+      }
+
+      let totalUserMonthlyUnits = 0;
+      let processedStationsCount = 0;
+      let stationBreakdownText = ""; 
+
+      console.log(`👤 Processing user ${phoneNo} across ${stations.length} connected station(s)...`);
+
+      for (const station of stations) {
+        const stationId = station.id;
+        const stationCustomName = station.name || `Station ${stationId}`;
+        if (!stationId) continue;
+
+        try {
+          console.log(`   📊 Fetching monthly solar data for Station ID: ${stationId}`);
+          const data = await getSolarmanDataCore(db, user, stationId, 2, startTime, endTime);
+
+          let stationUnits = 0;
+          if (data && data.stationDataItems && Array.isArray(data.stationDataItems)) {
+            data.stationDataItems.forEach(item => {
+              if (item.generationValue) {
+                stationUnits += Number(item.generationValue);
+              }
+            });
+          }
+
+          totalUserMonthlyUnits += stationUnits;
+          processedStationsCount++;
+          stationBreakdownText += `• ${stationCustomName}: ${stationUnits.toFixed(2)} Units\n`;
+
+        } catch (stationError) {
+          console.error(`   ⚠️ Failed to fetch monthly data for Station ${stationId}:`, stationError.message);
+        }
+      }
+
+      // 🚀 TRANSMIT MONTHLY LOGS TO ALL DEVICES VIA MULTICAST BATCH (WITH DUAL-PLATFORM DEFAULT SOUNDS)
+      if (processedStationsCount > 0) {
+        totalUserMonthlyUnits = Number(totalUserMonthlyUnits.toFixed(2));
+        const statusTitle = "☀️ Your Monthly Solar Summary is Ready!";
+        const finalNotificationBody = `Your monthly summary breakdown:\n${stationBreakdownText}Total Generation: ${totalUserMonthlyUnits} Units`;
+        
+        const messagesPayload = tokensToBroadcast.map(token => ({
+          token: token.trim(),
+          notification: {
+            title: statusTitle,
+            body: finalNotificationBody,
+          },
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "monthly_summary_channel_v1", // New independent platform channel
+              sound: "default",                        // Android default notification beep
+              clickAction: "MONTHLY_SUMMARY_NOTIFICATION_ACTION",
+            }
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: "default",                      // iOS standard text alert sound
+                category: "MONTHLY_SUMMARY_NOTIFICATION_ACTION"
+              }
+            }
+          },
+          data: {
+            type: "monthly_summary",
+            title: statusTitle,
+            body: finalNotificationBody,
+            totalUnits: String(totalUserMonthlyUnits),
+            show_actions: "false"
+          }
+        }));
+
+        console.log(`⚡ Dispatching monthly batch messages to all (${tokensToBroadcast.length}) registered devices for user ${phoneNo}...`);
+        
+        try {
+          const batchResponse = await admin.messaging().sendEach(messagesPayload);
+          console.log(`📋 Monthly multicast results for ${phoneNo}: [${batchResponse.successCount} passed / ${batchResponse.failureCount} failed]`);
+          
+          // 🧼 RECOVERY MAINTENANCE CYCLE
+          for (let index = 0; index < batchResponse.responses.length; index++) {
+            const singleResponse = batchResponse.responses[index];
+            
+            if (!singleResponse.success) {
+              const errorInstance = singleResponse.error;
+              const targetBadToken = tokensToBroadcast[index];
+
+              console.warn(`⚠️ Target Monthly Token Delivery Failure Context:`, errorInstance.code);
+
+              if (errorInstance.code === 'messaging/registration-token-not-registered') {
+                console.log(`🧼 Stale/Uninstalled device detected. Surgically plucking token from MongoDB...`);
+                
+                await db.collection("userDetails").updateOne(
+                  { _id: phoneNo },
+                  { 
+                    $pull: { 
+                      "PlatformInfo.devices": { fcmToken: targetBadToken } 
+                    } 
+                  }
+                );
+                
+              }
+            }
+          }
+        } catch (multicastErr) {
+          console.error(`❌ Complete breakdown executing multi-device monthly operation:`, multicastErr.message);
+        }
+      }
+    }
+
+    // ⏱️ TESTING LOOP INTERVAL: Recovers back to pending every 30 seconds for easy log checking
+    const nextRunTime = new Date();
+    nextRunTime.setSeconds(nextRunTime.getSeconds() + 30); 
+
+    await db.collection("jobs_queue").updateOne(
+      { _id: masterJob._id },
+      {
+        $set: {
+          status: "pending",
+          runAt: nextRunTime,
+          lockedAt: null,
+          lastRunAt: new Date()
+        }
+      }
+    );
+
+    console.log(`✅ Monthly Master Loop finished. NEXT TESTING TICK SCHEDULED FOR: ${nextRunTime.toLocaleTimeString()}`);
+
+  } catch (error) {
+    console.error("❌ Critical breakdown in Monthly Master Loop processing:", error.message);
     await db.collection("jobs_queue").updateOne(
       { _id: masterJob._id },
       { $set: { status: "pending", lockedAt: null } }
