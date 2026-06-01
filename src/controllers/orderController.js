@@ -60,6 +60,14 @@ export const addOrder = async (c) => {
         console.error("❌ Flowtrix Sync failed:", syncErr.message);
       }
 
+      // ⏱️ Create a clean, short 12-hour time string (e.g., "03:02 PM")
+      const formattedShortTime = new Date().toLocaleTimeString('en-US', {
+                                timeZone: 'Asia/Kolkata',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                hour12: true
+                                });
+
       // Save Lead to MongoDB (Marked as unaccepted)
       const result = await db.collection("lead").insertOne({
         name,
@@ -77,6 +85,7 @@ export const addOrder = async (c) => {
         flowtrixCardId: flowtrixCardId,
         currentListId: newEntryListId, 
         createdAt: todayDateOnly,
+        time: formattedShortTime   // 📝 Saves as a clean string format like "03:02 PM"
       });
 
       const leadId = result.insertedId;
@@ -111,9 +120,9 @@ export const addOrder = async (c) => {
               taskType: "SURVEYOR_CASCADING_DISPATCH",
               leadId: leadId,
               surveyorsList: workersWithDistance, 
-              currentIndex: 0,                   
+              currentIndex: 0,                                    
               status: "pending",
-              runAt: new Date()                  
+              runAt: new Date()                                  
             });
 
             console.log(`⏳ Cascading dispatch engine task initialized for Lead ID: ${leadId}`);
@@ -237,7 +246,6 @@ export const syncToFlowtrix = async (c) => {
   }
 };
 
-
 export const rejectOrder = async (c) => {
   try {
     const body = await c.req.json();
@@ -321,7 +329,6 @@ export const rejectOrder = async (c) => {
   }
 };
 
-
 export const getAdminRejections = async (c) => {
   try {
     console.trace("🔍 SHOW ME WHO IS CALLING THIS FUNCTION:");
@@ -345,7 +352,6 @@ export const getAdminRejections = async (c) => {
     return c.json({ error: "Internal server error" }, 500);
   }
 };
-
 
 export const updateOrder = async (c) => {
   try {
