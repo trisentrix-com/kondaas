@@ -1,7 +1,9 @@
 import { withDatabase, getSystemKeys } from '../utils/config.js';
+import { getZohoAccessToken } from '../utils/zohoAuth.js'; // 🔑 Imported from your utils helper!
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
+// 🧮 Geolocation mathematical routing formula
 function haversineDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // Radius of the earth in km
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -22,75 +24,71 @@ const getISTDateStrings = () => {
   return { todayDateOnly, todayKey };
 };
 
+/**
+ * 📥 Add Order (Create Lead inside Zoho CRM & Init Surveyor Dispatch Queue)
+ */
 export const addOrder = async (c) => {
   try {
     const body = await c.req.json();
     const { name, mobile, whatsappNo, email, city, comment, referredBy, latitude, longitude, address, kilovolt } = body;
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      const keys = await getSystemKeys(db);
-      const { todayDateOnly, todayKey } = getISTDateStrings();
+      const { todayKey } = getISTDateStrings();
 
-      const boardId = "dbiYtzsTX7BaSX3pk";
-      const newEntryListId = "xSfLcnhqcz7h56hPz"; 
-      const flowtrixToken = keys.flowtrix?.boardToken || "fjfOx8r_zrkmU6A4XjBeXqwRvVAlTB7c2eklkav4PHj"; 
+      // 🔐 Grab active authorization credentials from your clean utility file
+      const zohoToken = await getZohoAccessToken(db);
+
+      // 🗺️ Build a clean descriptive string for coordinates since Zoho layout has no dedicated lat/long boxes
+      const geoInfo = latitude && longitude ? `[Coordinates: ${latitude}, ${longitude}]\n` : '';
+      const finalDescription = `${geoInfo}${comment || ''}`.trim();
+
       
-      let flowtrixCardId = null;
+      const zohoPayload = {
+        data: [
+          {
+            Last_Name: name || "Unknown Lead",        
+            Customer_Name: name || "Unknown Lead",    
+            Mobile: String(mobile),
+            Whatsapp_Number: whatsappNo ? String(whatsappNo) : null,
+            Email: email || null,
+            City: city || null,                        
+            Street: address || null,                  
+            Description: finalDescription || null,
+            Wattage_Required: kilovolt ? String(kilovolt) : null
+            
+          }
+        ]
+      };
 
-      // Sync to Flowtrix
-      try {
-        const flowtrixResponse = await fetch(`http://flowtrix:8080/api/boards/${boardId}/lists/${newEntryListId}/cards`, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${flowtrixToken}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            title: `${name}-${mobile}`,
-            authorId: "Lxc9EwKM5j4ov95ZT",
-            swimlaneId: "rF336Crux7KAqNXmQ" 
-          })
-        });
+      console.log(`📡 Sending validated layout payload to Zoho CRM for customer: ${name}`);
 
-        if (flowtrixResponse.ok) {
-          const responseData = await flowtrixResponse.json();
-          flowtrixCardId = responseData._id; 
-        }
-      } catch (syncErr) {
-        console.error("❌ Flowtrix Sync failed:", syncErr.message);
-      }
-
-      // ⏱️ Create a clean, short 12-hour time string (e.g., "03:02 PM")
-      const formattedShortTime = new Date().toLocaleTimeString('en-US', {
-                                timeZone: 'Asia/Kolkata',
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                hour12: true
-                                });
-
-      // Save Lead to MongoDB (Marked as unaccepted)
-      const result = await db.collection("lead").insertOne({
-        name,
-        mobile,
-        whatsappNo: whatsappNo || null,
-        email: email || null,
-        city,
-        comment,
-        referredBy,
-        latitude: latitude || null,
-        longitude: longitude || null,
-        address: address || null,
-        kilovolt: kilovolt || null,
-        status: "unaccepted",
-        flowtrixCardId: flowtrixCardId,
-        currentListId: newEntryListId, 
-        createdAt: todayDateOnly,
-        time: formattedShortTime   // 📝 Saves as a clean string format like "03:02 PM"
+      const zohoResponse = await fetch("https://www.zohoapis.in/crm/v8/Leads", {
+        method: "POST",
+        headers: {
+          "Authorization": `Zoho-oauthtoken ${zohoToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(zohoPayload)
       });
 
-      const leadId = result.insertedId;
+      if (!zohoResponse.ok) {
+        const errDetails = await zohoResponse.text();
+        console.error("❌ Zoho Insertion Blocked:", errDetails);
+        return c.json({ error: "Failed to create lead inside Zoho CRM module.", details: errDetails }, 500);
+      }
 
-      // Geolocation and Cascading Worker Array Sorting
+      const zohoResult = await zohoResponse.json();
+      const statusBlock = zohoResult.data?.[0];
+
+      if (statusBlock?.status !== "success") {
+        return c.json({ error: "High level payload error rejected by Zoho.", details: statusBlock }, 400);
+      }
+
+      // 🔍 Extract the unique Zoho Record String ID!
+      const zohoLeadId = statusBlock.details.id;
+      console.log(`✅ Record successfully provisioned. Zoho Lead ID: ${zohoLeadId}`);
+
+      // 📡 Proximity Geolocation Scan and Worker Assignment Routing (Kept completely functional)
       if (latitude && longitude) {
         const activeWorkers = await db.collection("locations")
           .find({ [todayKey]: { $exists: true } }).toArray();
@@ -110,218 +108,62 @@ export const addOrder = async (c) => {
           }).filter(Boolean);
 
           if (workersWithDistance.length > 0) {
-            // Sort array so index 0 is the closest surveyor
             workersWithDistance.sort((a, b) => a.distance - b.distance);
             
-            console.log(`📋 Sorted ${workersWithDistance.length} surveyors by proximity for Lead ID: ${leadId}`);
+            console.log(`📋 Sorted ${workersWithDistance.length} surveyors by proximity for Zoho Lead ID: ${zohoLeadId}`);
             
-            // 🚀 Background queue entry setup for cascading dispatch 
+            // 🚀 Insert assignment task into local background queue using Zoho ID
             await db.collection("jobs_queue").insertOne({
               taskType: "SURVEYOR_CASCADING_DISPATCH",
-              leadId: leadId,
+              leadId: zohoLeadId, // Cleanly mapped to Zoho's String ID instead of an old Mongo object!
               surveyorsList: workersWithDistance, 
               currentIndex: 0,                                    
               status: "pending",
               runAt: new Date()                                  
             });
 
-            console.log(`⏳ Cascading dispatch engine task initialized for Lead ID: ${leadId}`);
+            console.log(`⏳ Cascading dispatch engine task initialized for Zoho Lead ID: ${zohoLeadId}`);
           }
         }
       }
 
       return c.json({ 
-        message: "Order added and cascading dispatch queue started successfully!", 
-        id: leadId,
-        flowtrixId: flowtrixCardId 
+        success: true,
+        message: "Order added and Zoho CRM cascading routing started successfully!", 
+        id: zohoLeadId
       }, 201);
     });
   } catch (err) {
-    console.error("❌ AddOrder Error:", err.message);
+    console.error("❌ AddOrder Error Exception:", err.message);
     return c.json({ error: "Internal server error" }, 500);
   }
 };
 
-export const syncToFlowtrix = async (c) => {
-  try {
-    const body = await c.req.json();
-    const { 
-      customerMobile, 
-      surveyorNumber, 
-      status, 
-      receivedAt, // Epoch integer from frontend for Accepted
-      startAt,    // Epoch integer from frontend for InProgress
-      dueAt,      // Epoch integer from frontend for InProgress
-      endAt       // Epoch integer from frontend for Completed
-    } = body;
-
-    const listIdMap = {
-      "new leads": "xSfLcnhqcz7h56hPz",
-      "accepted": "XKJT3KxZr77o9Kmxa",
-      "inprogress": "7TrNeSYhfHipPqtch",
-      "completed": "zu4QHWmQQ2ydjQtrr"
-    };
-
-    const targetListId = listIdMap[status.toLowerCase()];
-    if (!targetListId) return c.json({ error: "Invalid or unsupported status for standard sync" }, 400);
-
-    return await withDatabase(MONGODB_URI, async (db) => {
-      const keys = await getSystemKeys(db);
-      
-      const lead = await db.collection("lead").findOne({ 
-        $or: [
-          { mobile: customerMobile }, 
-          { mobile: String(customerMobile) },
-          { mobile: Number(customerMobile) }
-        ] 
-      });
-
-      if (!lead || !lead.flowtrixCardId) {
-        console.error(`❌ Lead not found for mobile: ${customerMobile}`);
-        return c.json({ error: "Lead not found in database." }, 404);
-      }
-
-      const currentOriginId = lead.currentListId || "xSfLcnhqcz7h56hPz";
-      console.log(`📡 Moving from: ${currentOriginId} -> To: ${targetListId}`);
-
-      const boardId = "dbiYtzsTX7BaSX3pk";
-      const flowtrixToken = keys.flowtrix?.boardToken || "SDkKCXbBAN3tf17Wwa-YPAl6S5dqUS6v_TFWBvaKLwe";
-
-      // 📦 Build the baseline Flowtrix payload
-      const flowtrixBody = {
-        listId: targetListId, 
-        description: `${status.toUpperCase()}/ surveyor number - ${surveyorNumber}`
-      };
-
-      // 🔄 Dynamically convert and attach frontend Epoch timestamps to Flowtrix payload ONLY
-      const currentStatus = status.toLowerCase();
-      
-      if (currentStatus === "accepted" && receivedAt) {
-        flowtrixBody.receivedAt = new Date(Number(receivedAt)).toISOString();
-      } 
-      else if (currentStatus === "inprogress") {
-        if (startAt) flowtrixBody.startAt = new Date(Number(startAt)).toISOString();
-        if (dueAt) flowtrixBody.dueAt = new Date(Number(dueAt)).toISOString();
-      } 
-      else if (currentStatus === "completed" && endAt) {
-        flowtrixBody.endAt = new Date(Number(endAt)).toISOString();
-      }
-
-      // Flowtrix API Call (Port 8080)
-      const response = await fetch(`http://flowtrix:8080/api/boards/${boardId}/lists/${currentOriginId}/cards/${lead.flowtrixCardId}`, {
-        method: "PUT",
-        headers: {
-          "Authorization": `Bearer ${flowtrixToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(flowtrixBody)
-      });
-
-      if (response.ok) {
-        // 🔒 SAFE DATABASE UPDATE: Keeps your exact original schema structure
-        const updateResult = await db.collection("lead").updateOne(
-          { _id: lead._id }, 
-          { 
-            $set: { 
-              currentListId: targetListId, 
-              status: status.toLowerCase() 
-            } 
-          }
-        );
-
-        if (updateResult.modifiedCount > 0) {
-          
-        }
-
-        return c.json({ success: true, message: `Moved to ${status}` });
-      } else {
-        const errorText = await response.text();
-        console.error("❌ Flowtrix Error:", errorText);
-        return c.json({ error: "Flowtrix update failed", details: errorText }, 500);
-      }
-    });
-  } catch (err) {
-    console.error("❌ Exception:", err.message);
-    return c.json({ error: "Internal server error" }, 500);
-  }
-};
-
+/**
+ * ❌ Reject Order (Logs logs into local admin_reject only)
+ */
 export const rejectOrder = async (c) => {
   try {
     const body = await c.req.json();
-    const { 
-      customerMobile, 
-      surveyorNumber, 
-      comment,
-      receivedAt,
-    } = body;
+    const { customerMobile, surveyorNumber, comment, receivedAt } = body;
 
     if (!comment) {
       return c.json({ error: "Rejection reason (comment) is required" }, 400);
     }
 
-    const rejectListId = "KqQcQRx6HubqfH3hz"; 
-
     return await withDatabase(MONGODB_URI, async (db) => {
-      const keys = await getSystemKeys(db);
-      
-      const lead = await db.collection("lead").findOne({ 
-        $or: [
-          { mobile: customerMobile }, 
-          { mobile: String(customerMobile) },
-          { mobile: Number(customerMobile) }
-        ] 
-      });
-
-      if (!lead || !lead.flowtrixCardId) {
-        console.error(`❌ Lead not found for rejection mobile: ${customerMobile}`);
-        return c.json({ error: "Lead not found in database." }, 404);
-      }
-
-      const currentOriginId = lead.currentListId || "xSfLcnhqcz7h56hPz";
-      
-      const boardId = "dbiYtzsTX7BaSX3pk";
-      const flowtrixToken = keys.flowtrix?.boardToken || "SDkKCXbBAN3tf17Wwa-YPAl6S5dqUS6v_TFWBvaKLwe";
-
-      // 📦 Build the rejection payload for Flowtrix external boards
-      const flowtrixBody = {
-        listId: rejectListId,
-        description: `Rejected/ surveyor number - ${surveyorNumber || 'N/A'}`,
-        comment: comment
+      // Safe local insert maintaining standard auditing schemas exclusively
+      const adminRejectPayload = {
+        surveyorNumber: surveyorNumber || "N/A",
+        customerMobile: customerMobile,
+        comment: comment,
+        time: receivedAt ? new Date(Number(receivedAt)).toISOString() : null
       };
 
-      if (receivedAt) {
-        flowtrixBody.receivedAt = new Date(Number(receivedAt)).toISOString();
-      }
-
-      // Flowtrix API Call (Port 8080)
-      const response = await fetch(`http://flowtrix:8080/api/boards/${boardId}/lists/${currentOriginId}/cards/${lead.flowtrixCardId}`, {
-        method: "PUT",
-        headers: {
-          "Authorization": `Bearer ${flowtrixToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(flowtrixBody)
-      });
-
-      if (response.ok) {
-        // 📥 INSERT METADATA ONLY: Touches no other local collections; writes exclusively to admin_reject
-        const adminRejectPayload = {
-          surveyorNumber: surveyorNumber || "N/A",
-          customerMobile: customerMobile,
-          comment: comment,
-          time: receivedAt ? new Date(Number(receivedAt)).toISOString() : null // ⏱️ Single field provided by mobile
-        };
-
-        await db.collection("admin_reject").insertOne(adminRejectPayload);
-        console.log(`✅ Rejection tracked in admin_reject collection with single 'time' field for surveyor: ${surveyorNumber}`);
-        
-        return c.json({ success: true, message: "Order rejected and synced successfully" });
-      } else {
-        const errorText = await response.text();
-        console.error("❌ Flowtrix Rejection Sync Error:", errorText);
-        return c.json({ error: "Flowtrix rejection update failed", details: errorText }, 500);
-      }
+      await db.collection("admin_reject").insertOne(adminRejectPayload);
+      console.log(`✅ Rejection tracked locally in admin_reject collection for surveyor: ${surveyorNumber}`);
+      
+      return c.json({ success: true, message: "Order rejection cataloged locally." });
     });
   } catch (err) {
     console.error("❌ RejectOrder Exception Error:", err.message);
@@ -329,113 +171,165 @@ export const rejectOrder = async (c) => {
   }
 };
 
+/**
+ * 📋 Get Admin Rejection History Logs
+ */
 export const getAdminRejections = async (c) => {
   try {
-    
     return await withDatabase(MONGODB_URI, async (db) => {
-
-      const rejections = await db.collection("admin_reject")
-        .find({})
-        .sort({ time: -1 })
-        .toArray();
-
-      console.log(`📋 Retrieved ${rejections.length} logs from admin_reject collection.`);
-
-      return c.json({ 
-        success: true, 
-        count: rejections.length,
-        data: rejections 
-      }, 200);
+      const rejections = await db.collection("admin_reject").find({}).sort({ time: -1 }).toArray();
+      return c.json({ success: true, count: rejections.length, data: rejections }, 200);
     });
   } catch (err) {
-    console.error("❌ getAdminRejections Exception Error:", err.message);
     return c.json({ error: "Internal server error" }, 500);
   }
 };
 
+/**
+ * 📝 Update Order Profile Parameters inside Zoho CRM
+ */
 export const updateOrder = async (c) => {
   try {
     const body = await c.req.json();
-    const { mobile } = body;
+    const { name, mobile, whatsappNo, email, city, comment, latitude, longitude, address, kilovolt } = body;
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      const existing = await db.collection("lead").findOne({ mobile });
-      if (!existing) return c.json({ error: "Order not found!" }, 404);
+      const zohoToken = await getZohoAccessToken(db);
 
-      const { name, mobile, whatsappNo, email, city, comment, referredBy, latitude, longitude, address, kilovolt  } = body;
+      const searchResponse = await fetch(`https://www.zohoapis.in/crm/v8/Leads/search?phone=${mobile}`, {
+        method: "GET",
+        headers: { "Authorization": `Zoho-oauthtoken ${zohoToken}` }
+      });
 
-      await db.collection("lead").updateOne(
-        { mobile },
-        { $set: { name, mobile, whatsappNo: whatsappNo || null, email: email || null, city, comment, referredBy, latitude, longitude, address, kilovolt: kilovolt || null } }
-      );
-      return c.json({ message: "Order updated successfully!" });
+      const searchResult = await searchResponse.json();
+      const zohoRecord = searchResult.data?.[0];
+
+      if (!zohoRecord?.id) return c.json({ error: "Lead profile not found in Zoho CRM." }, 404);
+
+      const geoInfo = latitude && longitude ? `[Coordinates: ${latitude}, ${longitude}]\n` : '';
+      const finalDescription = `${geoInfo}${comment || ''}`.trim();
+
+      const updatePayload = {
+        data: [
+          {
+            id: zohoRecord.id,
+            Last_Name: name,
+            Customer_Name: name,
+            Mobile: String(mobile),
+            Whatsapp_Number: whatsappNo ? String(whatsappNo) : null,
+            Email: email || null,
+            City: city || null,
+            Street: address || null,
+            Description: finalDescription || null,
+            Wattage_Required: kilovolt ? String(kilovolt) : null
+          }
+        ]
+      };
+
+      const response = await fetch(`https://www.zohoapis.in/crm/v8/Leads/${zohoRecord.id}`, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Zoho-oauthtoken ${zohoToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(updatePayload)
+      });
+
+      if (!response.ok) return c.json({ error: "Failed to update record inside Zoho." }, 500);
+      return c.json({ message: "Zoho CRM profile data synchronized cleanly!" });
     });
   } catch (err) {
     return c.json({ error: "Internal server error" }, 500);
   }
 };
 
-export const updateOrderStatus = async (c) => {
-  try {
-    const { mobile, status } = await c.req.json();
-    if (!["accepted", "inprogress", "completed"].includes(status)) {
-      return c.json({ error: "Invalid status" }, 400);
-    }
-
-    return await withDatabase(MONGODB_URI, async (db) => {
-      const result = await db.collection("lead").updateOne({ mobile }, { $set: { status } });
-      if (result.matchedCount === 0) return c.json({ error: "Order not found!" }, 404);
-      return c.json({ message: `Order status updated to ${status}` });
-    });
-  } catch (err) {
-    return c.json({ error: "Internal server error" }, 500);
-  }
-};
-
+/**
+ * 📊 Get Orders (Fetches live list directly from Zoho using field parameters)
+ */
 export const getOrders = async (c) => {
   try {
-    const orders = await withDatabase(MONGODB_URI, async (db) => {
-      return await db.collection("lead").find({}).toArray();
+    return await withDatabase(MONGODB_URI, async (db) => {
+      const zohoToken = await getZohoAccessToken(db);
+
+      // Explicitly specify required fields string matching your layout blueprint
+      const fieldsParam = "Last_Name,Customer_Name,Mobile,Whatsapp_Number,Email,City,Lead_Status,Street,Description,Wattage_Required";
+      
+      const response = await fetch(`https://www.zohoapis.in/crm/v8/Leads?fields=${fieldsParam}&per_page=50`, {
+        method: "GET",
+        headers: {
+          "Authorization": `Zoho-oauthtoken ${zohoToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!response.ok) {
+        const errTxt = await response.text();
+        console.error("❌ Zoho Fetch Leads failed:", errTxt);
+        return c.json({ error: "Failed to retrieve records from Zoho." }, 500);
+      }
+
+      const result = await response.json();
+      
+      // Remap Zoho keys to clean output variables for mobile client rendering uniformity
+      const orders = (result.data || []).map(lead => {
+        const coordMatch = lead.Description?.match(/\[Coordinates:\s*([^,]+),\s*([^\]]+)\]/);
+        return {
+          id: lead.id,
+          name: lead.Customer_Name || lead.Last_Name,
+          mobile: lead.Mobile,
+          whatsappNo: lead.Whatsapp_Number,
+          email: lead.Email,
+          city: lead.City,
+          address: lead.Street,
+          comment: lead.Description?.replace(/\[Coordinates:\s*[^\]]+\]\n?/, ''),
+          status: lead.Lead_Status?.toLowerCase() || "unaccepted",
+          latitude: coordMatch ? coordMatch[1] : null,
+          longitude: coordMatch ? coordMatch[2] : null,
+          kilovolt: lead.Wattage_Required
+        };
+      });
+
+      return c.json(orders);
     });
-    return c.json(orders);
   } catch (err) {
     return c.json({ error: "Internal server error" }, 500);
   }
 };
 
-
+/**
+ * 🗑️ Delete Order (Deletes record permanently from Zoho CRM)
+ */
 export const deleteOrder = async (c) => {
   try {
     const body = await c.req.json();
     const { mobile } = body;
 
-    // 🛡️ Validation: Ensure mobile is provided in the request body
-    if (!mobile) {
-      return c.json({ error: "Customer mobile number is required to delete a lead" }, 400);
-    }
+    if (!mobile) return c.json({ error: "Customer mobile number is required to delete a lead" }, 400);
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      // 🗑️ Delete lead matching any type format (String or Number)
-      const result = await db.collection("lead").deleteOne({
-        $or: [
-          { mobile: mobile },
-          { mobile: String(mobile) },
-          { mobile: Number(mobile) }
-        ]
+      const zohoToken = await getZohoAccessToken(db);
+
+      const searchResponse = await fetch(`https://www.zohoapis.in/crm/v8/Leads/search?phone=${mobile}`, {
+        method: "GET",
+        headers: { "Authorization": `Zoho-oauthtoken ${zohoToken}` }
       });
 
-      // 🔍 Check if a document was actually found and deleted
-      if (result.deletedCount === 0) {
-        console.warn(`⚠️ Deletion failed: No lead found for mobile: ${mobile}`);
-        return c.json({ error: "Lead not found in database." }, 404);
-      }
+      const searchResult = await searchResponse.json();
+      const zohoRecord = searchResult.data?.[0];
 
-      console.log(`✅ Successfully deleted lead with mobile: ${mobile} from lead collection.`);
-      
-      return c.json({ 
-        success: true, 
-        message: "Lead deleted successfully from the database." 
-      }, 200);
+      if (!zohoRecord?.id) return c.json({ error: "Lead not found in Zoho CRM database." }, 404);
+
+      console.log(`🗑️ Erasing record from Zoho CRM matching ID: ${zohoRecord.id}`);
+
+      const response = await fetch(`https://www.zohoapis.in/crm/v8/Leads/${zohoRecord.id}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Zoho-oauthtoken ${zohoToken}` }
+      });
+
+      if (!response.ok) return c.json({ error: "Zoho CRM deletion operation failed." }, 500);
+
+      console.log(`✅ Successfully deleted lead with mobile: ${mobile} from Zoho CRM.`);
+      return c.json({ success: true, message: "Lead record deleted successfully from Zoho CRM." }, 200);
     });
   } catch (err) {
     console.error("❌ deleteOrder Exception Error:", err.message);

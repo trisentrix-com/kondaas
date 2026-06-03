@@ -1,13 +1,11 @@
 import { Hono } from 'hono';
-import { addOrder,syncToFlowtrix,rejectOrder,updateOrder,updateOrderStatus,getOrders,getAdminRejections,deleteOrder } from '../controllers/orderController.js';
+import { addOrder,rejectOrder,updateOrder,getOrders,getAdminRejections,deleteOrder } from '../controllers/orderController.js';
 
 const orderRoutes = new Hono();
 
 orderRoutes.post('/add', addOrder);
-orderRoutes.post('/sync-status', syncToFlowtrix);
 orderRoutes.post('/reject', rejectOrder);
 orderRoutes.put('/update', updateOrder);
-orderRoutes.put('/updatestatus', updateOrderStatus);
 orderRoutes.get('/all', getOrders);
 orderRoutes.get('/admin-rejections', getAdminRejections);
 orderRoutes.delete('/delete', deleteOrder);
