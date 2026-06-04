@@ -288,14 +288,80 @@ export const getAdminRejections = async (c) => {
   }
 };
 
+/**
+ * 🔄 Update Order (Matches fields exactly with addOrder manual fallback pattern)
+ */
 export const updateOrder = async (c) => {
   try {
     const body = await c.req.json();
-    const { name, mobile, whatsappNo, email, city, comment, latitude, longitude, address, kilovolt } = body;
+    
+    // Extract every single field exactly like your addOrder function
+    const {
+      // Section 1: Lead Information
+      title,
+      firstName,
+      lastName,
+      customerName,
+      employeeName,
+      phone,
+      mobile,
+      whatsapp,
+      email,
+      secondaryEmail,
+      company,
+      website,
+      fax,
+      leadSource,
+      leadStatus,
+      industry,
+      annualRevenue,
+      noOfEmployees,
+      rating,
+      skypeId,
+      twitter,
+      socialLeadId,
+      emailOptOut,
+
+      // Section 2: Requirements
+      requirementType,
+      serviceType,
+      ebNumbers,
+      wattageRequired,
+      typeOfRoof,
+      planningToInstall,
+      monthlyBill,
+      purposeOfSolar,
+
+      // Section 3: Address Information
+      street,
+      district,
+      province,
+      country,
+      postalCode,
+
+      // Section 4: Description Information
+      description,
+
+      // Section 5: Follow Up Information
+      nextFollowUp,
+      futureProspect,
+
+      // Geolocation Coordinates
+      latitude,
+      longitude
+    } = body;
+
+    // 🛑 Strict Business Rule: Mobile Number is mandatory to run the search lookup
+    if (!mobile) {
+      return c.json({ error: "Validation Error: Mobile number is required to update a lead." }, 400);
+    }
 
     return await withDatabase(MONGODB_URI, async (db) => {
+      // 🔐 Grab active authorization credentials dynamically out of RAM / config collection
       const zohoToken = await getZohoAccessToken(db);
 
+      // 🔍 Find the unique Zoho record ID by searching for the mobile number
+      console.log(`🔍 Searching Zoho CRM for profile matching phone: ${mobile}`);
       const searchResponse = await fetch(`https://www.zohoapis.in/crm/v8/Leads/search?phone=${mobile}`, {
         method: "GET",
         headers: { "Authorization": `Zoho-oauthtoken ${zohoToken}` }
@@ -304,53 +370,124 @@ export const updateOrder = async (c) => {
       const searchResult = await searchResponse.json();
       const zohoRecord = searchResult.data?.[0];
 
-      if (!zohoRecord?.id) return c.json({ error: "Lead profile not found in Zoho CRM." }, 404);
+      if (!zohoRecord?.id) {
+        return c.json({ error: "Lead profile not found in Zoho CRM using provided mobile key." }, 404);
+      }
 
+      // 🗺️ Format Coordinate notes cleanly to bundle at the top of description details
       const geoInfo = latitude && longitude ? `[Coordinates: ${latitude}, ${longitude}]\n` : '';
-      const finalDescription = `${geoInfo}${comment || ''}`.trim();
+      const finalDescription = `${geoInfo}${description || ''}`.trim();
 
-      const updatePayload = {
+      // 🏷️ Compute the Last_Name property cleanly matching addOrder logic
+      const computedLastName = lastName || firstName || customerName || "Unknown Lead";
+
+      // 📦 Structure the payload using your exact manual fallback layout block style
+      const zohoPayload = {
         data: [
           {
+            // Zoho mandates the record ID inside the data block array for PUT requests
             id: zohoRecord.id,
-            Last_Name: name,
-            Customer_Name: name,
+
+            // Mandatory Profile Block
+            Last_Name: computedLastName,
+            Customer_Name: customerName || firstName || "Unknown Lead",
+            Salutation: title || null,
+            First_Name: firstName || null,
+            Employee_Name: employeeName || null,
+            
+            // Communications
+            Phone: phone ? String(phone) : null,
             Mobile: String(mobile),
-            Whatsapp_Number: whatsappNo ? String(whatsappNo) : null,
+            Whatsapp_Number: whatsapp ? String(whatsapp) : null,
             Email: email || null,
-            City: city || null,
-            Street: address || null,
+            Secondary_Email: secondaryEmail || null,
+            Fax: fax ? String(fax) : null,
+            Skype_ID: skypeId || null,
+            Twitter: twitter || null,
+            Social_Lead_ID: socialLeadId || null,
+            Email_Opt_Out: emailOptOut === true || emailOptOut === "true",
+
+            // Company Meta Info
+            Company: company || "Individual", 
+            Website: website || null,
+            Industry: industry || null,
+            Annual_Revenue: annualRevenue ? Number(annualRevenue) : null,
+            No_of_Employees: noOfEmployees ? Number(noOfEmployees) : null,
+            Rating: rating || null,
+
+            // Core Source & Custom Manual Lifecycle settings 
+            Lead_Source: leadSource || null,
+            Lead_Status: leadStatus || null,
+
+            // Solar Engineering Requirements Mappings
+            Requirement_Type: requirementType || null,
+            Service_Type: serviceType || null,
+            EB_Numbers: ebNumbers || null,
+            Wattage_Required: wattageRequired ? String(wattageRequired) : null,
+            Type_of_Roof: typeOfRoof || null,
+            When_Planning_to_Install: planningToInstall || null,
+            Average_Monthly_Bill: monthlyBill ? Number(monthlyBill) : null,
+            Purpose_of_Solar: purposeOfSolar || null,
+
+            // Core Address Block Info
+            Street: street || null,
+            City: district || null,        // District maps to Zoho standard 'City' field
+            State: province || null,
+            Country: country || null,
+            Zip_Code: postalCode ? String(postalCode) : null,
+
+            // Operational Scheduler & Dynamic Description Strings
             Description: finalDescription || null,
-            Wattage_Required: kilovolt ? String(kilovolt) : null
+            Next_Follow_Up: nextFollowUp || null,
+            Future_Prospect_Date: futureProspect || null
           }
         ]
       };
 
+      console.log(`📡 Sending layout sync updates to Zoho CRM for Lead ID: ${zohoRecord.id}`);
+
+      // 3. Make the PUT update request to Zoho CRM API module endpoint
       const response = await fetch(`https://www.zohoapis.in/crm/v8/Leads/${zohoRecord.id}`, {
         method: "PUT",
         headers: {
           "Authorization": `Zoho-oauthtoken ${zohoToken}`,
           "Content-Type": "application/json"
         },
-        body: JSON.stringify(updatePayload)
+        body: JSON.stringify(zohoPayload)
       });
 
-      if (!response.ok) return c.json({ error: "Failed to update record inside Zoho." }, 500);
-      return c.json({ message: "Zoho CRM profile data synchronized cleanly!" });
+      if (!response.ok) {
+        const errDetails = await response.text();
+        console.error("❌ Zoho Modification Blocked:", errDetails);
+        return c.json({ error: "Failed to update record inside Zoho CRM module.", details: errDetails }, 500);
+      }
+
+      return c.json({ 
+        success: true, 
+        message: "Zoho CRM profile data synchronized cleanly!", 
+        id: zohoRecord.id 
+      });
     });
   } catch (err) {
+    console.error("❌ UpdateOrder Error Exception:", err.message);
     return c.json({ error: "Internal server error" }, 500);
   }
 };
 
 
+/**
+ * 📋 Get Orders (Fetches records from Zoho including the profile Creation Timestamp)
+ */
 export const getOrders = async (c) => {
   try {
     return await withDatabase(MONGODB_URI, async (db) => {
+      // 🔐 Grab active authorization credentials dynamically out of RAM / config collection
       const zohoToken = await getZohoAccessToken(db);
 
-      // Explicitly specify required fields string matching your layout blueprint
-      const fieldsParam = "Last_Name,Customer_Name,Mobile,Whatsapp_Number,Email,City,Lead_Status,Street,Description,Wattage_Required";
+      // 🏷️ Explicitly append 'Created_Time' field to request the record timestamp from Zoho
+      const fieldsParam = "Last_Name,Customer_Name,Mobile,Whatsapp_Number,Email,City,Lead_Status,Street,Description,Wattage_Required,Created_Time";
+      
+      console.log("📡 Fetching active leads list from Zoho CRM index...");
       
       const response = await fetch(`https://www.zohoapis.in/crm/v8/Leads?fields=${fieldsParam}&per_page=50`, {
         method: "GET",
@@ -368,9 +505,10 @@ export const getOrders = async (c) => {
 
       const result = await response.json();
       
-      // Remap Zoho keys to clean output variables for mobile client rendering uniformity
+      // Remap Zoho API fields to clean, standardized JSON keys for mobile app UI rendering
       const orders = (result.data || []).map(lead => {
         const coordMatch = lead.Description?.match(/\[Coordinates:\s*([^,]+),\s*([^\]]+)\]/);
+        
         return {
           id: lead.id,
           name: lead.Customer_Name || lead.Last_Name,
@@ -383,28 +521,41 @@ export const getOrders = async (c) => {
           status: lead.Lead_Status?.toLowerCase() || "unaccepted",
           latitude: coordMatch ? coordMatch[1] : null,
           longitude: coordMatch ? coordMatch[2] : null,
-          kilovolt: lead.Wattage_Required
+          kilovolt: lead.Wattage_Required,
+          
+          // 🗓️ Extract the profile creation timestamp cleanly
+          date: lead.Created_Time || null 
         };
       });
 
       return c.json(orders);
     });
   } catch (err) {
+    console.error("❌ GetOrders Error Exception:", err.message);
     return c.json({ error: "Internal server error" }, 500);
   }
 };
 
-
+/**
+ * 🗑️ Delete Order (Searches Zoho CRM by mobile number field key and deletes the record)
+ */
 export const deleteOrder = async (c) => {
   try {
     const body = await c.req.json();
     const { mobile } = body;
 
-    if (!mobile) return c.json({ error: "Customer mobile number is required to delete a lead" }, 400);
+    // 🛑 Strict Business Rule: Mobile Number is required to locate the profile to remove
+    if (!mobile) {
+      return c.json({ error: "Validation Error: Mobile number field key is required to delete a lead." }, 400);
+    }
 
     return await withDatabase(MONGODB_URI, async (db) => {
+      // 🔐 Grab active authorization credentials dynamically out of RAM / config collection
       const zohoToken = await getZohoAccessToken(db);
 
+      console.log(`🔍 Searching Zoho CRM to find profile deletion match for phone: ${mobile}`);
+      
+      // 🔍 Find the unique Zoho record ID by searching for the mobile number
       const searchResponse = await fetch(`https://www.zohoapis.in/crm/v8/Leads/search?phone=${mobile}`, {
         method: "GET",
         headers: { "Authorization": `Zoho-oauthtoken ${zohoToken}` }
@@ -413,22 +564,34 @@ export const deleteOrder = async (c) => {
       const searchResult = await searchResponse.json();
       const zohoRecord = searchResult.data?.[0];
 
-      if (!zohoRecord?.id) return c.json({ error: "Lead not found in Zoho CRM database." }, 404);
+      if (!zohoRecord?.id) {
+        return c.json({ error: "Lead profile not found in Zoho CRM using provided mobile key." }, 404);
+      }
 
-      console.log(`🗑️ Erasing record from Zoho CRM matching ID: ${zohoRecord.id}`);
+      console.log(`🗑️ Erasing record from Zoho CRM matching Lead ID: ${zohoRecord.id}`);
 
+      // 💥 Send the HTTP DELETE request straight to Zoho's explicit record endpoint URL
       const response = await fetch(`https://www.zohoapis.in/crm/v8/Leads/${zohoRecord.id}`, {
         method: "DELETE",
         headers: { "Authorization": `Zoho-oauthtoken ${zohoToken}` }
       });
 
-      if (!response.ok) return c.json({ error: "Zoho CRM deletion operation failed." }, 500);
+      if (!response.ok) {
+        const errDetails = await response.text();
+        console.error("❌ Zoho Deletion Blocked:", errDetails);
+        return c.json({ error: "Zoho CRM deletion operation failed.", details: errDetails }, 500);
+      }
 
       console.log(`✅ Successfully deleted lead with mobile: ${mobile} from Zoho CRM.`);
-      return c.json({ success: true, message: "Lead record deleted successfully from Zoho CRM." }, 200);
+      
+      return c.json({ 
+        success: true, 
+        message: "Lead record deleted successfully from Zoho CRM.",
+        id: zohoRecord.id
+      }, 200);
     });
   } catch (err) {
-    console.error("❌ deleteOrder Exception Error:", err.message);
+    console.error("❌ DeleteOrder Error Exception:", err.message);
     return c.json({ error: "Internal server error" }, 500);
   }
 };
