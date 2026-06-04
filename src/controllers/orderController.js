@@ -27,40 +27,149 @@ const getISTDateStrings = () => {
 /**
  * 📥 Add Order (Create Lead inside Zoho CRM & Init Surveyor Dispatch Queue)
  */
+/**
+ * 📥 Add Order (Extracts all form card fields, validates mobile, and pushes to Zoho CRM)
+ */
 export const addOrder = async (c) => {
   try {
     const body = await c.req.json();
-    const { name, mobile, whatsappNo, email, city, comment, referredBy, latitude, longitude, address, kilovolt } = body;
+    
+    // Destructure every single field from your friend's 6 form sections + geolocation
+    const {
+      // Section 1: Lead Information
+      title,
+      firstName,
+      lastName,
+      customerName,
+      employeeName,
+      phone,
+      mobile,
+      whatsapp,
+      email,
+      secondaryEmail,
+      company,
+      website,
+      fax,
+      leadSource,
+      leadStatus,
+      industry,
+      annualRevenue,
+      noOfEmployees,
+      rating,
+      skypeId,
+      twitter,
+      socialLeadId,
+      emailOptOut,
+
+      // Section 2: Requirements
+      requirementType,
+      serviceType,
+      ebNumbers,
+      wattageRequired,
+      typeOfRoof,
+      planningToInstall,
+      monthlyBill,
+      purposeOfSolar,
+
+      // Section 3: Address Information
+      street,
+      district,
+      province,
+      country,
+      postalCode,
+
+      // Section 4: Description Information
+      description,
+
+      // Section 5: Follow Up Information
+      nextFollowUp,
+      futureProspect,
+
+      // Geolocation Coordinates
+      latitude,
+      longitude
+    } = body;
+
+    // 🛑 Strict Business Rule: Mobile Number is mandatory!
+    if (!mobile) {
+      return c.json({ error: "Validation Error: Mobile number is required to register a lead." }, 400);
+    }
 
     return await withDatabase(MONGODB_URI, async (db) => {
       const { todayKey } = getISTDateStrings();
 
-      // 🔐 Grab active authorization credentials from your clean utility file
+      // 🔐 Grab active authorization credentials dynamically out of RAM / your clean utility file
       const zohoToken = await getZohoAccessToken(db);
 
-      // 🗺️ Build a clean descriptive string for coordinates since Zoho layout has no dedicated lat/long boxes
+      // 🗺️ Format Coordinate notes cleanly to bundle at the top of description details
       const geoInfo = latitude && longitude ? `[Coordinates: ${latitude}, ${longitude}]\n` : '';
-      const finalDescription = `${geoInfo}${comment || ''}`.trim();
+      const finalDescription = `${geoInfo}${description || ''}`.trim();
 
-      
+      // 🏷️ Compute the Last_Name property cleanly since Zoho strictly mandates its existence
+      // If firstName or lastName are missing, fallback smoothly to the customerName string, or "Unknown Lead"
+      const computedLastName = lastName || firstName || customerName || "Unknown Lead";
+
+      // 📦 Structure the payload to adapt directly to Zoho CRM API field naming mappings safely
       const zohoPayload = {
         data: [
           {
-            Last_Name: name || "Unknown Lead",        
-            Customer_Name: name || "Unknown Lead",    
-            Mobile: String(mobile),
-            Whatsapp_Number: whatsappNo ? String(whatsappNo) : null,
-            Email: email || null,
-            City: city || null,                        
-            Street: address || null,                  
-            Description: finalDescription || null,
-            Wattage_Required: kilovolt ? String(kilovolt) : null
+            // Mandatory Profile Block
+            Last_Name: computedLastName,
+            Customer_Name: customerName || firstName || "Unknown Lead",
+            Salutation: title || null,
+            First_Name: firstName || null,
+            Employee_Name: employeeName || null,
             
+            // Communications
+            Phone: phone ? String(phone) : null,
+            Mobile: String(mobile),
+            Whatsapp_Number: whatsapp ? String(whatsapp) : null,
+            Email: email || null,
+            Secondary_Email: secondaryEmail || null,
+            Fax: fax ? String(fax) : null,
+            Skype_ID: skypeId || null,
+            Twitter: twitter || null,
+            Social_Lead_ID: socialLeadId || null,
+            Email_Opt_Out: emailOptOut === true || emailOptOut === "true",
+
+            // Company Meta Info
+            Company: company || "Individual", // Zoho standard modules prefer having a Company value string or default
+            Website: website || null,
+            Industry: industry || null,
+            Annual_Revenue: annualRevenue ? Number(annualRevenue) : null,
+            No_of_Employees: noOfEmployees ? Number(noOfEmployees) : null,
+            Rating: rating || null,
+
+            // Core Source & Custom Manual Lifecycle settings 
+            Lead_Source: leadSource || null,
+            Lead_Status: leadStatus || null,
+
+            // Solar Engineering Requirements Mappings
+            Requirement_Type: requirementType || null,
+            Service_Type: serviceType || null,
+            EB_Numbers: ebNumbers || null,
+            Wattage_Required: wattageRequired ? String(wattageRequired) : null,
+            Type_of_Roof: typeOfRoof || null,
+            When_Planning_to_Install: planningToInstall || null,
+            Average_Monthly_Bill: monthlyBill ? Number(monthlyBill) : null,
+            Purpose_of_Solar: purposeOfSolar || null,
+
+            // Core Address Block Info
+            Street: street || null,
+            City: district || null,        // Your district mapping fits into Zoho's regional standard 'City' field
+            State: province || null,
+            Country: country || null,
+            Zip_Code: postalCode ? String(postalCode) : null,
+
+            // Operational Scheduler & Dynamic Description Strings
+            Description: finalDescription || null,
+            Next_Follow_Up: nextFollowUp || null,
+            Future_Prospect_Date: futureProspect || null
           }
         ]
       };
 
-      console.log(`📡 Sending validated layout payload to Zoho CRM for customer: ${name}`);
+      console.log(`📡 Sending full flexible layout payload to Zoho CRM for customer: ${customerName || firstName || 'New Lead'}`);
 
       const zohoResponse = await fetch("https://www.zohoapis.in/crm/v8/Leads", {
         method: "POST",
@@ -88,7 +197,7 @@ export const addOrder = async (c) => {
       const zohoLeadId = statusBlock.details.id;
       console.log(`✅ Record successfully provisioned. Zoho Lead ID: ${zohoLeadId}`);
 
-      // 📡 Proximity Geolocation Scan and Worker Assignment Routing (Kept completely functional)
+      // 📡 Proximity Geolocation Scan and Surveyor Queue Cascading Dispatch Engine
       if (latitude && longitude) {
         const activeWorkers = await db.collection("locations")
           .find({ [todayKey]: { $exists: true } }).toArray();
@@ -112,10 +221,10 @@ export const addOrder = async (c) => {
             
             console.log(`📋 Sorted ${workersWithDistance.length} surveyors by proximity for Zoho Lead ID: ${zohoLeadId}`);
             
-            // 🚀 Insert assignment task into local background queue using Zoho ID
+            // 🚀 Insert assignment task into local jobs queue using Zoho Lead ID
             await db.collection("jobs_queue").insertOne({
               taskType: "SURVEYOR_CASCADING_DISPATCH",
-              leadId: zohoLeadId, // Cleanly mapped to Zoho's String ID instead of an old Mongo object!
+              leadId: zohoLeadId,
               surveyorsList: workersWithDistance, 
               currentIndex: 0,                                    
               status: "pending",
@@ -129,7 +238,7 @@ export const addOrder = async (c) => {
 
       return c.json({ 
         success: true,
-        message: "Order added and Zoho CRM cascading routing started successfully!", 
+        message: "Order successfully added and cascading background routing initialized!", 
         id: zohoLeadId
       }, 201);
     });
@@ -139,9 +248,6 @@ export const addOrder = async (c) => {
   }
 };
 
-/**
- * ❌ Reject Order (Logs logs into local admin_reject only)
- */
 export const rejectOrder = async (c) => {
   try {
     const body = await c.req.json();
@@ -171,9 +277,6 @@ export const rejectOrder = async (c) => {
   }
 };
 
-/**
- * 📋 Get Admin Rejection History Logs
- */
 export const getAdminRejections = async (c) => {
   try {
     return await withDatabase(MONGODB_URI, async (db) => {
@@ -185,9 +288,6 @@ export const getAdminRejections = async (c) => {
   }
 };
 
-/**
- * 📝 Update Order Profile Parameters inside Zoho CRM
- */
 export const updateOrder = async (c) => {
   try {
     const body = await c.req.json();
@@ -243,9 +343,7 @@ export const updateOrder = async (c) => {
   }
 };
 
-/**
- * 📊 Get Orders (Fetches live list directly from Zoho using field parameters)
- */
+
 export const getOrders = async (c) => {
   try {
     return await withDatabase(MONGODB_URI, async (db) => {
@@ -296,9 +394,7 @@ export const getOrders = async (c) => {
   }
 };
 
-/**
- * 🗑️ Delete Order (Deletes record permanently from Zoho CRM)
- */
+
 export const deleteOrder = async (c) => {
   try {
     const body = await c.req.json();
