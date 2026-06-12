@@ -281,6 +281,88 @@ export const updateOrder = async (c) => {
   }
 };
 
+export const updateSurveyStatus = async (c) => {
+  try {
+    const body = await c.req.json();
+    const { id, status } = body;
+
+    // 1. Parameter Validation
+    if (!id || !status) {
+      return c.json({ error: "Validation Error: Missing required fields 'id' or 'status'." }, 400);
+    }
+
+    // Standardize input string for robust comparison matching
+    const normalizedStatus = status.toLowerCase().trim().replace(/[\s_]+/g, '-');
+
+    // 2. Exact Mapping to Zoho's case-sensitive dropdown configurations
+    let zohoValue = null;
+
+    if (normalizedStatus === "scheduled") {
+      zohoValue = "Scheduled";
+    } else if (normalizedStatus === "rejected") {
+      zohoValue = "Rejected";
+    } else if (normalizedStatus === "completed") {
+      zohoValue = "Completed";
+    } else if (normalizedStatus === "accepted") {
+      zohoValue = "Accepted";
+    } else if (normalizedStatus === "inprogress" || normalizedStatus === "in-progress") {
+      zohoValue = "In-Progress"; // 🎯 Matches your specific capital letters and hyphen!
+    }
+
+    // Fallback if the requested value doesn't match your system options
+    if (!zohoValue) {
+      return c.json({ 
+        error: `Validation Error: '${status}' is not recognized. Must be one of: scheduled, rejected, completed, accepted, inprogress` 
+      }, 400);
+    }
+
+    return await withDatabase(MONGODB_URI, async (db) => {
+      // 🔐 Grab active authorization credentials dynamically from your config / DB
+      const zohoToken = await getZohoAccessToken(db);
+
+      // 3. Build the precise payload using the perfectly formatted zohoValue
+      const zohoPayload = {
+        data: [
+          {
+            id: String(id),
+            Site_Survey_Status: zohoValue 
+          }
+        ]
+      };
+
+      console.log(`📡 Transmitting Targeted Dropdown Update to Zoho CRM Deals for record ID: ${id} -> Value: ${zohoValue}...`);
+
+      // 4. 🚀 FIX: Switched module path from /Leads/ to /Deals/ to target converted profiles
+      const response = await fetch(`https://www.zohoapis.in/crm/v8/Deals/${id}`, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Zoho-oauthtoken ${zohoToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(zohoPayload)
+      });
+
+      if (!response.ok) {
+        const errTxt = await response.text();
+        console.error("❌ Zoho Dropdown Update execution failed:", errTxt);
+        return c.json({ error: "Failed to update record state on Zoho.", details: errTxt }, 500);
+      }
+
+      const result = await response.json();
+      console.log("✅ Zoho Server Response Status Payload:", JSON.stringify(result));
+
+      return c.json({ 
+        success: true, 
+        message: `Zoho Site Survey Status successfully transitioned to '${zohoValue}' inside Deals module.`,
+        id: id
+      });
+    });
+
+  } catch (err) {
+    console.error("❌ Dropdown Update Exception Error:", err.message);
+    return c.json({ error: "Internal server error" }, 500);
+  }
+};
 
 /**
  * 📋 Get Orders (Fetches records from Zoho including the profile Creation Timestamp)
@@ -291,8 +373,8 @@ export const getOrders = async (c) => {
       // 🔐 Grab active authorization credentials dynamically out of RAM / config collection
       const zohoToken = await getZohoAccessToken(db);
 
-      // 🏷️ Explicitly append 'Created_Time' field to request the record timestamp from Zoho
-      const fieldsParam = "Last_Name,Customer_Name,Mobile,Whatsapp_Number,Email,City,Lead_Status,Street,Description,Wattage_Required,Created_Time";
+      // 🏷️ ADDED: Explicitly append 'Site_Survey_Status' to the request fields parameter
+      const fieldsParam = "Last_Name,Customer_Name,Mobile,Whatsapp_Number,Email,City,Lead_Status,Street,Description,Wattage_Required,Created_Time,Site_Survey_Status";
       
       console.log("📡 Fetching active leads list from Zoho CRM index...");
       
@@ -326,6 +408,10 @@ export const getOrders = async (c) => {
           address: lead.Street,
           comment: lead.Description?.replace(/\[Coordinates:\s*[^\]]+\]\n?/, ''),
           status: lead.Lead_Status?.toLowerCase() || "unaccepted",
+          
+          // 📊 ADDED: Standardize dropdown choices to lowercase for smooth frontend state handling
+          siteSurveyStatus: lead.Site_Survey_Status?.toLowerCase() || "accepted",
+          
           latitude: coordMatch ? coordMatch[1] : null,
           longitude: coordMatch ? coordMatch[2] : null,
           kilovolt: lead.Wattage_Required,
@@ -339,6 +425,71 @@ export const getOrders = async (c) => {
     });
   } catch (err) {
     console.error("❌ GetOrders Error Exception:", err.message);
+    return c.json({ error: "Internal server error" }, 500);
+  }
+};
+
+export const getSurveyorOrders = async (c) => {
+  try {
+    return await withDatabase(MONGODB_URI, async (db) => {
+      // 🔐 Grab active authorization credentials dynamically out of RAM / config collection
+      const zohoToken = await getZohoAccessToken(db);
+
+      // 🏷️ Specify the fields we need from the Deals module
+      // Note: In Zoho Deals, the name field is usually 'Deal_Name'. Adjust field api_names if customized.
+      const fieldsParam = "id,Deal_Name,Contact_Name,Mobile,Whatsapp_Number,Email,City,Stage,Street,Description,Wattage_Required,Created_Time,Site_Survey_Status";
+      
+      console.log("📡 Fetching active converted orders from Zoho CRM Deals index...");
+      
+      const response = await fetch(`https://www.zohoapis.in/crm/v8/Deals?fields=${fieldsParam}&per_page=50`, {
+        method: "GET",
+        headers: {
+          "Authorization": `Zoho-oauthtoken ${zohoToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!response.ok) {
+        const errTxt = await response.text();
+        console.error("❌ Zoho Fetch Deals failed:", errTxt);
+        return c.json({ error: "Failed to retrieve records from Zoho Deals module." }, 500);
+      }
+
+      const result = await response.json();
+      
+      // Remap Zoho Deal fields to the standardized JSON structure your app expects
+      const surveyorOrders = (result.data || []).map(deal => {
+        const coordMatch = deal.Description?.match(/\[Coordinates:\s*([^,]+),\s*([^\]]+)\]/);
+        
+        // Clean up Zoho's "In-Progress" dropdown option to read smoothly as "inprogress"
+        const rawStatus = deal.Site_Survey_Status || "";
+        const cleanedSurveyStatus = rawStatus.toLowerCase().replace('-', '').trim();
+
+        return {
+          id: deal.id, // This is now the official Deal ID!
+          name: deal.Deal_Name || (deal.Contact_Name ? deal.Contact_Name.name : "Unknown Customer"),
+          mobile: deal.Mobile || null,
+          whatsappNo: deal.Whatsapp_Number || null,
+          email: deal.Email || null,
+          city: deal.City || null,
+          address: deal.Street || null,
+          comment: deal.Description?.replace(/\[Coordinates:\s*[^\]]+\]\n?/, '') || "",
+          status: deal.Stage?.toLowerCase() || "unaccepted", // 'Stage' represents the Deal pipeline state
+          
+          // 🎯 Standardizes "In-Progress" -> "inprogress", "Accepted" -> "accepted", etc.
+          siteSurveyStatus: cleanedSurveyStatus || "accepted",
+          
+          latitude: coordMatch ? coordMatch[1] : null,
+          longitude: coordMatch ? coordMatch[2] : null,
+          kilovolt: deal.Wattage_Required || null,
+          date: deal.Created_Time || null 
+        };
+      });
+
+      return c.json(surveyorOrders);
+    });
+  } catch (err) {
+    console.error("❌ GetSurveyorOrders Error Exception:", err.message);
     return c.json({ error: "Internal server error" }, 500);
   }
 };
