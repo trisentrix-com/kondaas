@@ -123,3 +123,61 @@ export const getCurrentLocation = async (c) => {
     return c.json({ error: err.message }, 500);
   }
 };
+
+export const createLogisticsProduct = async (c) => {
+  try {
+    const body = await c.req.json();
+    const { mobile, productName, productPrice, manufacturedDate } = body;
+
+    // 1. Full Payload Validation
+    if (!mobile || !productName || productPrice === undefined || productPrice === null || !manufacturedDate) {
+      return c.json({ 
+        error: "Validation Error: 'mobile', 'productName', 'productPrice', and 'manufacturedDate' are all required fields." 
+      }, 400);
+    }
+
+    // 2. Data Sanitization & Formatting
+    const cleanedMobile = String(mobile).trim();
+    const cleanedProductName = String(productName).trim();
+    
+    // Validate Price
+    const parsedPrice = parseFloat(productPrice);
+    if (isNaN(parsedPrice) || parsedPrice < 0) {
+      return c.json({ error: "Validation Error: 'productPrice' must be a valid positive number." }, 400);
+    }
+
+    // Validate and Parse Manufacturing Date
+    const parsedMfgDate = new Date(manufacturedDate);
+    if (isNaN(parsedMfgDate.getTime())) {
+      return c.json({ error: "Validation Error: 'manufacturedDate' is invalid. Please use a standard format (e.g., YYYY-MM-DD)." }, 400);
+    }
+
+    // 3. Persist to MongoDB Atlas
+    return await withDatabase(MONGODB_URI, async (db) => {
+      const collection = db.collection("logistic-products");
+
+      const newLogisticsRecord = {
+        mobile: cleanedMobile,
+        productName: cleanedProductName,
+        productPrice: parsedPrice,
+        manufacturedDate: parsedMfgDate,
+        createdAt: new Date(), // Record tracking timestamp,
+        status: "pickup" 
+      };
+
+      console.log(`📦 Storing comprehensive logistics product details for mobile: ${cleanedMobile}...`);
+      
+      const insertResult = await collection.insertOne(newLogisticsRecord);
+
+      return c.json({
+        success: true,
+        message: "Logistics product and pricing records successfully stored.",
+        recordId: insertResult.insertedId
+      }, 201);
+    });
+
+  } catch (err) {
+    console.error("❌ Logistics Product Capture Exception:", err.message);
+    return c.json({ error: "Internal server error" }, 500);
+  }
+};
