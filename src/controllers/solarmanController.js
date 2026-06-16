@@ -714,4 +714,3 @@ export const seedTariffSlabs = async (c) => {
     return c.json({ error: err.message }, 500);
   }
 };
-

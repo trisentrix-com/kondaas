@@ -1,8 +1,8 @@
+import 'dotenv/config';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import { startQueueRunner } from './src/controllers/queueEngine.js';
-import 'dotenv/config';
 import admin from 'firebase-admin';
 import fs from 'fs';
 
@@ -39,6 +39,7 @@ import solarmanRoutes from './src/routes/solarmanRoutes.js';
 import savingsRoutes from './src/routes/savingsRoutes.js';
 import ticketRoutes from './src/routes/ticketRoutes.js';
 import referralRoutes from './src/routes/referralRoutes.js';
+import installerRoutes from './src/routes/installerRoutes.js';
 
 const app = new Hono();
 
@@ -55,7 +56,7 @@ app.route('/savings', savingsRoutes);
 app.route('/ticket', ticketRoutes);
 app.route('/referral', referralRoutes);
 app.route('/logistic', logisticRoutes);
-
+app.route('/installer', installerRoutes);
 
 const port = 8080;
 

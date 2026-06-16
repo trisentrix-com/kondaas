@@ -1,6 +1,6 @@
 import { withDatabase, Binary, ObjectId, getSystemKeys } from '../utils/config.js';
 import { generatePDF } from '../utils/pdfGenerator.js';
-import { uploadToR2 } from '../utils/s3Upload.js';
+import { uploadToZohoWorkDrive,uploadSurveyorPhoto } from '../utils/uploadToZohoWorkDrive.js';
 import { getInvoiceTemplate } from '../templates/invoiceTemplate.js';
 import path from 'path';
 import fs from 'fs';
@@ -77,12 +77,13 @@ const processWhatsAppNotification = async (notificationId) => {
  */
 export const triggerScenarioNotification = async (c) => {
   try {
-    const { surveyorNumber, customerMobile,name,scenarioType, eta, mapsUrl } = await c.req.json();
+    // 📥 STEP 1 & 3: Extract deal_id alongside the standard notification body
+    const { deal_id, surveyorNumber, customerMobile, name, scenarioType, eta, mapsUrl } = await c.req.json();
+    
     return await withDatabase(MONGODB_URI, async (db) => {
-     
 
       const customerName = name;
-      const whatsappTo =customerMobile;
+      const whatsappTo = customerMobile;
       
       const messages = {
         1: `Hello ${customerName}, your Kondaas technician has started. Arrival in ${eta || 'soon'} min. Contact: ${surveyorNumber}.${mapsUrl ? `\n\n📍 Track Location: ${mapsUrl}` : ''}`,
@@ -103,36 +104,44 @@ export const triggerScenarioNotification = async (c) => {
       });
       processWhatsAppNotification(textResult.insertedId).catch(err => console.error(err));
 
-      // --- STEP 3: IF SCENARIO 4, FETCH FORM DATA & GENERATE PDF ---
+      // --- STEP 3: IF SCENARIO 4, FETCH FORM DATA & GENERATE PDF FOR ZOHO WORKDRIVE ---
       if (scenarioType === 4) {
         (async () => {
           try {
-            console.log("📄 Heavy Work: Fetching Form Data & Generating PDF...");
+            console.log("📄 Heavy Background Process: Generating Invoice PDF for Zoho Workspace...");
             
+            // Validation: Make sure we don't try to name a file undefined
+            if (!deal_id) {
+              console.error("❌ PDF Cancelled: Missing 'deal_id' in payload request.");
+              return;
+            }
+
             const formData = await db.collection("forms").findOne({ mobileNumber: customerMobile });
             
             if (!formData) {
               console.error("❌ PDF Cancelled: No entry found in 'forms' collection for this mobile.");
               return;
             }
-            const shortId = Math.random().toString(36).substring(7);
-            const fileName = `Inv_${shortId}.pdf`; 
+
+            // 🎯 FILE NAME OVERRIDE: Swapped from shortId to Zoho Deal ID
+            const fileName = `${deal_id}.pdf`; 
             const filePath = path.join(process.cwd(), fileName);
             
-            formData.invoiceNo = `INV-${shortId.toUpperCase()}`;
+            // Set up invoice view parameters for the HTML rendering layout
+            formData.invoiceNo = `INV-${deal_id}`;
             formData.invoiceDate = new Date().toLocaleDateString('en-IN');
 
             const html = getInvoiceTemplate(formData); 
             await generatePDF(html, filePath);
             
-            await uploadToR2(filePath, fileName);
+            // 🔄 UPLOADER SWAP: Sent straight to Zoho WorkDrive
+            const finalPublicUrl = await uploadToZohoWorkDrive(filePath, fileName);
+            
+            // Clean local files from node process memory disk space
             fs.unlink(filePath, (err) => {
-              if (err) console.error("❌ Error deleting local PDF:", err.message);
-              else console.log(`🗑️ Successfully cleaned up local file: ${fileName}`);
+              if (err) console.error("❌ Error deleting local temporary PDF:", err.message);
+              else console.log(`🗑️ Cleaned up local workspace file: ${fileName}`);
             });
-
-            const publicBaseUrl = "https://pub-779720c6e2884996a1a81145da8c5bea.r2.dev";
-            const finalPublicUrl = `${publicBaseUrl}/${fileName}`;
 
             const pdfResult = await db.collection("notifications").insertOne({
               from: "Kondaas_System",
@@ -161,9 +170,72 @@ export const triggerScenarioNotification = async (c) => {
   }
 };
 
-/**
- * --- MANUAL ENDPOINTS ---
- */
+
+export const handleSurveyorPhotoUpload = async (c) => {
+  let temporaryFilePath = null;
+
+  try {
+    // 1. Parse the multipart/form-data payload directly via Hono
+    const body = await c.req.parseBody();
+    
+    const photoFile = body['photo']; // This is a web File object or Blob
+    const phoneNo = body['phoneNo'];
+    const date = body['date'];
+
+    // 2. Validate parameters
+    if (!photoFile || !phoneNo || !date) {
+      return c.json({
+        success: false,
+        message: "Validation Error: Missing required multipart fields: 'photo', 'phoneNo', or 'date'."
+      }, 400);
+    }
+
+    console.log(`📸 Processing incoming site photo from Surveyor: ${phoneNo} for date: ${date}...`);
+
+    // 3. Create a clean local uploads directory if it doesn't exist
+    const uploadDir = './uploads';
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    // 4. Convert the incoming web File stream to a local workspace file buffer
+    const arrayBuffer = await photoFile.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    
+    // Create a secure transient filename inside our local folder
+    temporaryFilePath = path.join(uploadDir, `temp_${Date.now()}_${photoFile.name}`);
+    fs.writeFileSync(temporaryFilePath, buffer);
+
+    // 5. Fire your unified Zoho WorkDrive wrapper handler
+    const workDriveUrl = await uploadSurveyorPhoto(temporaryFilePath, phoneNo, date);
+
+    // 6. Return successful payload url mapping to the surveyor's mobile application
+    return c.json({
+      success: true,
+      message: "Photo synced to Zoho WorkDrive successfully.",
+      url: workDriveUrl
+    }, 200);
+
+  } catch (error) {
+    console.error("❌ Surveyor Photo Route Pipeline Failed:", error.message);
+    return c.json({
+      success: false,
+      message: "Internal server crash during WorkDrive photo sync operation.",
+      error: error.message
+    }, 500);
+
+  } finally {
+    // 7. 🔥 CRITICAL Disk Space Cleanup: Always remove transient workspace asset files
+    if (temporaryFilePath && fs.existsSync(temporaryFilePath)) {
+      fs.unlink(temporaryFilePath, (err) => {
+        if (err) console.error("⚠️ Failed to remove temporary upload photo file:", err.message);
+        else console.log(`🗑️ Cleaned up temporary local workspace photo asset: ${temporaryFilePath}`);
+      });
+    }
+  }
+};
+
+
 export const addNotification = async (c) => {
   try {
     const body = await c.req.json();
