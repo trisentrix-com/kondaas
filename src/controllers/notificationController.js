@@ -88,7 +88,7 @@ export const triggerScenarioNotification = async (c) => {
         1: `Hello ${customerName}, your Kondaas technician has started. Arrival in ${eta || 'soon'} min. Contact: ${surveyorNumber}.${mapsUrl ? `\n\n📍 Track Location: ${mapsUrl}` : ''}`,
         2: `Hello ${customerName}, your technician is just 300 meters away!`,
         3: `Hello ${customerName}, your technician has arrived.`,
-        4: `Hello ${customerName}, your technician has completed the work. Thank you for choosing Kondaas!`
+        4: `Hello ${customerName}, your technician has completed the work. Thank you for choosing Kondaas! and kindly give rating.`
       };
 
       // --- STEP 2: ALWAYS SEND THE TEXT MESSAGE FIRST ---

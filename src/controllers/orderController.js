@@ -1,5 +1,6 @@
 import { withDatabase, getSystemKeys } from '../utils/config.js';
 import { getZohoAccessToken } from '../utils/zohoAuth.js'; // 🔑 Imported from your utils helper!
+import admin from 'firebase-admin';
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -24,20 +25,13 @@ const getISTDateStrings = () => {
   return { todayDateOnly, todayKey };
 };
 
-/**
- * 📥 Add Order (Create Lead inside Zoho CRM & Init Surveyor Dispatch Queue)
- */
-/**
- * 📥 Add Order (Extracts all form card fields, validates mobile, and pushes to Zoho CRM)
- */
 export const addOrder = async (c) => {
   try {
     const body = await c.req.json();
     
-    // 🔍 Extract only what's needed for the background geolocation dispatch engine
+    // 🔍 Extract identifying info for the Zoho entry
     const mobile = body.mobileNumber || body.mobile || body.Mobile; 
     const customerName = body.customerName || body.firstName || body.First_Name;
-    const { latitude, longitude } = body;
 
     // 🛑 Strict Business Rule: Mobile Number is mandatory for Zoho Leads
     if (!mobile) {
@@ -48,7 +42,7 @@ export const addOrder = async (c) => {
       // 🔐 Grab active authorization credentials dynamically
       const zohoToken = await getZohoAccessToken(db);
 
-      // 🏷️ Compute mandatory fallback fields that Zoho strictly rejects if missing
+      // 🏷️ Compute mandatory fallback fields
       const computedLastName = body.lastName || body.Last_Name || body.firstName || body.First_Name || customerName || "Unknown Lead";
 
       // 📦 Pure Dynamic Payload Builder
@@ -56,8 +50,6 @@ export const addOrder = async (c) => {
         data: [
           {
             ...body,
-
-            // Enforce mandatory fallbacks so the API remains happy
             Last_Name: computedLastName,
             Mobile: String(mobile)
           }
@@ -91,46 +83,9 @@ export const addOrder = async (c) => {
       const zohoLeadId = statusBlock.details.id;
       console.log(`✅ Record successfully provisioned. Zoho Lead ID: ${zohoLeadId}`);
 
-      // 📡 Proximity Geolocation Scan and Surveyor Queue Cascading Dispatch Engine
-      if (latitude && longitude) {
-        const { todayKey } = getISTDateStrings();
-        const activeWorkers = await db.collection("locations")
-          .find({ [todayKey]: { $exists: true } }).toArray();
-
-        if (activeWorkers.length > 0) {
-          const customerLat = parseFloat(latitude);
-          const customerLon = parseFloat(longitude);
-
-          const workersWithDistance = activeWorkers.map(worker => {
-            const latestEntry = worker[todayKey]?.find(e => e.isLatest === true);
-            if (!latestEntry) return null;
-
-            return {
-              phoneNo: worker.phoneNo,
-              distance: haversineDistance(customerLat, customerLon, parseFloat(latestEntry.latitude), parseFloat(latestEntry.longitude))
-            };
-          }).filter(Boolean);
-
-          if (workersWithDistance.length > 0) {
-            workersWithDistance.sort((a, b) => a.distance - b.distance);
-            
-            await db.collection("jobs_queue").insertOne({
-              taskType: "SURVEYOR_CASCADING_DISPATCH",
-              leadId: zohoLeadId,
-              surveyorsList: workersWithDistance, 
-              currentIndex: 0,                                    
-              status: "pending",
-              runAt: new Date()                                  
-            });
-
-            console.log(`⏳ Cascading dispatch engine task initialized for Zoho Lead ID: ${zohoLeadId}`);
-          }
-        }
-      }
-
       return c.json({ 
         success: true,
-        message: "Order successfully added, Zoho synced dynamically, and dispatch engine triggered!", 
+        message: "Order successfully added and synced with Zoho.", 
         id: zohoLeadId
       }, 201);
     });
@@ -219,10 +174,6 @@ export const getAdminCompletions = async (c) => {
   }
 };
 
-/**
-
- * 🔄 Update Order (Matches fields exactly with addOrder manual fallback pattern)
- */
 export const updateOrder = async (c) => {
   try {
     const body = await c.req.json();
@@ -364,82 +315,76 @@ export const updateSurveyStatus = async (c) => {
   }
 };
 
-/**
- * 📋 Get Orders (Fetches records from Zoho including the profile Creation Timestamp)
- */
+
+export const updateLocalDealSurveyStatus = async (c) => {
+  try {
+    const body = await c.req.json();
+    const { deal_id, siteSurveyStatus } = body;
+
+    // 🛑 Validation: Ensure we have the target deal and the status payload
+    if (!deal_id || !siteSurveyStatus) {
+      return c.json({ error: "Missing required fields: deal_id or siteSurveyStatus" }, 400);
+    }
+
+    // Standardize status format (converts "In Progress" or "in-progress" -> "inprogress")
+    const cleanedStatus = siteSurveyStatus.toLowerCase().replace(/[\s-_]/g, '').trim();
+
+    // Strict validation to keep your frontend status filtering working smoothly
+    const allowedStatuses = ["accepted", "inprogress", "completed"];
+    if (!allowedStatuses.includes(cleanedStatus)) {
+      return c.json({ 
+        error: `Invalid status setup. Must be one of: ${allowedStatuses.join(", ")}` 
+      }, 400);
+    }
+
+    return await withDatabase(MONGODB_URI, async (db) => {
+      
+      console.log(`🔄 Updating local status for Deal [${deal_id}] to matching state: ${cleanedStatus}`);
+
+      // Update document parameters inside your local MongoDB "deals" collection
+      const result = await db.collection("deals").updateOne(
+        { deal_id: deal_id },
+        { 
+          $set: { 
+            siteSurveyStatus: cleanedStatus,
+            updatedAt: new Date().toISOString()
+          } 
+        }
+      );
+
+      if (result.matchedCount === 0) {
+        console.log(`⚠️ No local record found to track for Deal ID: ${deal_id}`);
+        return c.json({ error: "Deal record not found in local tracking matrix." }, 404);
+      }
+
+      console.log(`✅ Successfully shifted status for Deal [${deal_id}] to pipeline flag: ${cleanedStatus}`);
+
+      return c.json({ 
+        success: true, 
+        message: `Site survey stage successfully shifted to ${cleanedStatus}.`,
+        deal_id: deal_id,
+        currentLocalStatus: cleanedStatus
+      }, 200);
+    });
+
+  } catch (err) {
+    console.error("❌ Update Local Survey Status Exception:", err.message);
+    return c.json({ error: "Internal server error updating local pipeline flags" }, 500);
+  }
+};
+
 export const getOrders = async (c) => {
   try {
     return await withDatabase(MONGODB_URI, async (db) => {
       // 🔐 Grab active authorization credentials dynamically out of RAM / config collection
       const zohoToken = await getZohoAccessToken(db);
 
-      // 🏷️ ADDED: Explicitly append 'Site_Survey_Status' to the request fields parameter
-      const fieldsParam = "Last_Name,Customer_Name,Mobile,Whatsapp_Number,Email,City,Lead_Status,Street,Description,Wattage_Required,Created_Time,Site_Survey_Status";
+      // 🏷️ Requesting all necessary Deal layout parameters from Zoho CRM
+      const fieldsParam = "id,Deal_Name,Contact_Name,Mobile,WhatsApp_Number,Email,Stage,Description,Wattage_Required,Created_Time,Site_Survey_Status," +
+                          "Address_City,Address_Street_Address,Address_Coordinates_Latitude,Address_Coordinates_Longitude," +
+                          "City,Street_Address,Latitude,Longitude";
       
-      console.log("📡 Fetching active leads list from Zoho CRM index...");
-      
-      const response = await fetch(`https://www.zohoapis.in/crm/v8/Leads?fields=${fieldsParam}&per_page=50`, {
-        method: "GET",
-        headers: {
-          "Authorization": `Zoho-oauthtoken ${zohoToken}`,
-          "Content-Type": "application/json"
-        }
-      });
-
-      if (!response.ok) {
-        const errTxt = await response.text();
-        console.error("❌ Zoho Fetch Leads failed:", errTxt);
-        return c.json({ error: "Failed to retrieve records from Zoho." }, 500);
-      }
-
-      const result = await response.json();
-      
-      // Remap Zoho API fields to clean, standardized JSON keys for mobile app UI rendering
-      const orders = (result.data || []).map(lead => {
-        const coordMatch = lead.Description?.match(/\[Coordinates:\s*([^,]+),\s*([^\]]+)\]/);
-        
-        return {
-          id: lead.id,
-          name: lead.Customer_Name || lead.Last_Name,
-          mobile: lead.Mobile,
-          whatsappNo: lead.Whatsapp_Number,
-          email: lead.Email,
-          city: lead.City,
-          address: lead.Street,
-          comment: lead.Description?.replace(/\[Coordinates:\s*[^\]]+\]\n?/, ''),
-          status: lead.Lead_Status?.toLowerCase() || "unaccepted",
-          
-          // 📊 ADDED: Standardize dropdown choices to lowercase for smooth frontend state handling
-          siteSurveyStatus: lead.Site_Survey_Status?.toLowerCase() || "accepted",
-          
-          latitude: coordMatch ? coordMatch[1] : null,
-          longitude: coordMatch ? coordMatch[2] : null,
-          kilovolt: lead.Wattage_Required,
-          
-          // 🗓️ Extract the profile creation timestamp cleanly
-          date: lead.Created_Time || null 
-        };
-      });
-
-      return c.json(orders);
-    });
-  } catch (err) {
-    console.error("❌ GetOrders Error Exception:", err.message);
-    return c.json({ error: "Internal server error" }, 500);
-  }
-};
-
-export const getSurveyorOrders = async (c) => {
-  try {
-    return await withDatabase(MONGODB_URI, async (db) => {
-      // 🔐 Grab active authorization credentials dynamically out of RAM / config collection
-      const zohoToken = await getZohoAccessToken(db);
-
-      // 🏷️ Specify the fields we need from the Deals module
-      // Note: In Zoho Deals, the name field is usually 'Deal_Name'. Adjust field api_names if customized.
-      const fieldsParam = "id,Deal_Name,Contact_Name,Mobile,Whatsapp_Number,Email,City,Stage,Street,Description,Wattage_Required,Created_Time,Site_Survey_Status";
-      
-      console.log("📡 Fetching active converted orders from Zoho CRM Deals index...");
+      console.log("📡 Admin Dashboard: Fetching active records from Zoho Deals engine...");
       
       const response = await fetch(`https://www.zohoapis.in/crm/v8/Deals?fields=${fieldsParam}&per_page=50`, {
         method: "GET",
@@ -451,49 +396,47 @@ export const getSurveyorOrders = async (c) => {
 
       if (!response.ok) {
         const errTxt = await response.text();
-        console.error("❌ Zoho Fetch Deals failed:", errTxt);
+        console.error("❌ Zoho Fetch Deals failed for Admin:", errTxt);
         return c.json({ error: "Failed to retrieve records from Zoho Deals module." }, 500);
       }
 
       const result = await response.json();
       
-      // Remap Zoho Deal fields to the standardized JSON structure your app expects
-      const surveyorOrders = (result.data || []).map(deal => {
-        const coordMatch = deal.Description?.match(/\[Coordinates:\s*([^,]+),\s*([^\]]+)\]/);
-        
-        // Clean up Zoho's "In-Progress" dropdown option to read smoothly as "inprogress"
+      // Remap Zoho API Deal fields to clean, standardized JSON keys for your Admin Mobile UI
+      const orders = (result.data || []).map(deal => {
         const rawStatus = deal.Site_Survey_Status || "";
         const cleanedSurveyStatus = rawStatus.toLowerCase().replace('-', '').trim();
 
         return {
-          id: deal.id, // This is now the official Deal ID!
+          id: deal.id, 
           name: deal.Deal_Name || (deal.Contact_Name ? deal.Contact_Name.name : "Unknown Customer"),
           mobile: deal.Mobile || null,
-          whatsappNo: deal.Whatsapp_Number || null,
+          whatsappNo: deal.WhatsApp_Number || null,
           email: deal.Email || null,
-          city: deal.City || null,
-          address: deal.Street || null,
-          comment: deal.Description?.replace(/\[Coordinates:\s*[^\]]+\]\n?/, '') || "",
-          status: deal.Stage?.toLowerCase() || "unaccepted", // 'Stage' represents the Deal pipeline state
           
-          // 🎯 Standardizes "In-Progress" -> "inprogress", "Accepted" -> "accepted", etc.
+          // Dual Fallback Mapping logic matching your current CRM setup layouts
+          city: deal.Address_City || deal.City || null,
+          address: deal.Address_Street_Address || deal.Street_Address || null,
+          latitude: deal.Address_Coordinates_Latitude || deal.Latitude || null,
+          longitude: deal.Address_Coordinates_Longitude || deal.Longitude || null,
+          
+          comment: deal.Description || "",
+          status: deal.Stage?.toLowerCase() || "unaccepted", 
           siteSurveyStatus: cleanedSurveyStatus || "accepted",
-          
-          latitude: coordMatch ? coordMatch[1] : null,
-          longitude: coordMatch ? coordMatch[2] : null,
           kilovolt: deal.Wattage_Required || null,
+          
+          // Extract the profile creation timestamp cleanly
           date: deal.Created_Time || null 
         };
       });
 
-      return c.json(surveyorOrders);
+      return c.json(orders);
     });
   } catch (err) {
-    console.error("❌ GetSurveyorOrders Error Exception:", err.message);
+    console.error("❌ GetOrders (Deals Mapping) Error Exception:", err.message);
     return c.json({ error: "Internal server error" }, 500);
   }
 };
-
 /**
  * 🗑️ Delete Order (Searches Zoho CRM by mobile number field key and deletes the record)
  */
@@ -501,7 +444,7 @@ export const deleteOrder = async (c) => {
   try {
     const body = await c.req.json();
     
-    // 🛑 Strict Business Rule: Explicit Zoho 'id' string is mandatory to target the precise lead
+    // 🛑 Strict Business Rule: Explicit Zoho 'id' string is mandatory to target the precise deal
     if (!body.id) {
       return c.json({ error: "Validation Error: A specific Zoho 'id' field is required to delete an order." }, 400);
     }
@@ -512,10 +455,10 @@ export const deleteOrder = async (c) => {
       // 🔐 Grab active authorization credentials dynamically
       const zohoToken = await getZohoAccessToken(db);
 
-      console.log(`🗑️ Initializing targeted erasure from Zoho CRM for Lead ID: ${targetZohoId}`);
+      console.log(`🗑️ Initializing targeted erasure from Zoho CRM for Deal ID: ${targetZohoId}`);
 
-      // 💥 Send the HTTP DELETE request straight to Zoho's explicit record endpoint URL string
-      const response = await fetch(`https://www.zohoapis.in/crm/v8/Leads/${targetZohoId}`, {
+      // 1. Send the HTTP DELETE request straight to Zoho's explicit DEALS endpoint
+      const response = await fetch(`https://www.zohoapis.in/crm/v8/Deals/${targetZohoId}`, {
         method: "DELETE",
         headers: { 
           "Authorization": `Zoho-oauthtoken ${zohoToken}` 
@@ -528,16 +471,254 @@ export const deleteOrder = async (c) => {
         return c.json({ error: "Zoho CRM deletion operation failed.", details: errDetails }, 500);
       }
 
-      console.log(`✅ Successfully deleted lead with ID: ${targetZohoId} from Zoho CRM.`);
+      console.log(`✅ Successfully deleted deal with ID: ${targetZohoId} from Zoho CRM.`);
+
+      // 2. 🧹 LOCAL CLEANUP: Also remove the assignment tracking record from your local MongoDB
+      const dbCleanup = await db.collection("deals").deleteOne({ deal_id: targetZohoId });
+      
+      if (dbCleanup.deletedCount > 0) {
+        console.log(`🧹 Local DB Cleanup: Removed deal ${targetZohoId} from local 'deals' collection.`);
+      } else {
+        console.log(`ℹ️ Local DB Cleanup: No local assignment document found for deal ${targetZohoId}.`);
+      }
       
       return c.json({ 
         success: true, 
-        message: "Lead record deleted successfully from Zoho CRM.",
+        message: "Deal record deleted successfully from Zoho CRM and local tracking.",
         id: targetZohoId
       }, 200);
     });
   } catch (err) {
     console.error("❌ DeleteOrder Error Exception:", err.message);
     return c.json({ error: "Internal server error" }, 500);
+  }
+};
+
+export const handleZohoDealWebhook = async (c) => {
+  try {
+    let payload = {};
+    
+    // 1. Grab any URL query string parameters (e.g., ?deal_id=123)
+    const queryParams = c.req.query();
+    if (Object.keys(queryParams).length > 0) {
+      payload = { ...payload, ...queryParams };
+    }
+
+    // 2. Read the raw text body to handle direct streams safely
+    const rawText = await c.req.text();
+    
+    if (rawText && rawText.trim().length > 0) {
+      try {
+        // Check if it's a pure JSON string
+        const parsedJson = JSON.parse(rawText);
+        payload = { ...payload, ...parsedJson };
+      } catch {
+        // If it's a form-encoded string (key1=val1&key2=val2)
+        const searchParams = new URLSearchParams(rawText);
+        const formObj = Object.fromEntries(searchParams.entries());
+        payload = { ...payload, ...formObj };
+      }
+    }
+
+    console.log("==================== 🔔 ZOHO WEBHOOK TRIPPED ====================");
+    console.log("Incoming Payload Data:", JSON.stringify(payload, null, 2));
+    console.log("================================================================");
+
+    // Execute database operations safely using your wrapper
+    return await withDatabase(MONGODB_URI, async (db) => {
+      
+      // 1. Query for all users whose role is admin
+      const admins = await db.collection("userDetails")
+        .find({ "UserInfo.role": "admin" })
+        .toArray();
+
+      console.log(`🔍 DB Check: Found ${admins.length} matching admin documents.`);
+
+      // 2. Safely collect all active fcmTokens into a clean array
+      let fcmTokens = [];
+      admins.forEach((adminUser, idx) => {
+        console.log(`👤 Processing Admin [${idx}]: Phone: ${adminUser.UserInfo?.phoneNo || "N/A"}`);
+        
+        const devices = adminUser.PlatformInfo?.devices;
+        if (devices && Array.isArray(devices)) {
+          console.log(`📱 Found ${devices.length} devices mapped for this admin.`);
+          devices.forEach((device, dIdx) => {
+            console.log(`   👉 Device [${dIdx}] Token State:`, device.fcmToken ? "Token Available" : "Token is EMPTY/MISSING");
+            if (device.fcmToken) {
+              fcmTokens.push(device.fcmToken);
+            }
+          });
+        } else {
+          console.log(`⚠️ Admin [${idx}] has no active 'PlatformInfo.devices' array structure.`);
+        }
+      });
+
+      console.log("📊 Total Collected Admin Tokens Array Count:", fcmTokens.length);
+
+      // 3. Fire notifications if any admin devices were tracked down
+      if (fcmTokens.length > 0) {
+        const message = {
+          notification: {
+            title: "New Deal Created! 🚀",
+            body: `Deal: ${payload.deal_name || "New Opportunity"} is now in ${payload.stage || "Qualification"}.`,
+          },
+          data: {
+            deal_id: payload.deal_id || "",
+          },
+          tokens: fcmTokens,
+        };
+
+        const response = await admin.messaging().sendEachForMulticast(message);
+        console.log(`✅ Push notifications dispatched successfully to ${response.successCount} admin devices.`);
+      } else {
+        console.log("⚠️ No active admin FCM tokens found in the database.");
+      }
+
+      return c.json({ success: true, message: "Captured and notifications processed" }, 200);
+    });
+
+  } catch (err) {
+    console.error("❌ Webhook Processing Error Exception:", err.message);
+    return c.json({ error: "Failed to process deal webhook pipeline" }, 500);
+  }
+};
+
+
+export const assignDealToSurveyor = async (c) => {
+  try {
+    const body = await c.req.json();
+    
+    // Extract everything matching your clean getOrders/Deals layout mapping
+    const { 
+      id, // This is your deal_id from Zoho
+      name, // This is the Deal_Name / Contact_Name
+      mobile,
+      whatsappNo,
+      email,
+      city,
+      address,
+      latitude,
+      longitude,
+      comment,
+      status,
+      kilovolt,
+      date,
+      surveyorNumber // The phone number the admin picked
+    } = body;
+
+    if (!id || !surveyorNumber) {
+      return c.json({ error: "Missing required fields: id (deal_id) or surveyorNumber" }, 400);
+    }
+
+    return await withDatabase(MONGODB_URI, async (db) => {
+      
+      // 1. Pack the complete matching layout structure to save into your local DB
+      const fullDealPayload = {
+        deal_id: id,
+        deal_name: name || "New Site Opportunity",
+        mobile: mobile || null,
+        whatsappNo: whatsappNo || null,
+        email: email || null,
+        city: city || null,
+        address: address || null,
+        latitude: latitude || null,
+        longitude: longitude || null,
+        comment: comment || "",
+        status: status || "unaccepted",
+        siteSurveyStatus:"notassigned",
+        kilovolt: kilovolt || null,
+        date: date || null,
+        assignedTo: surveyorNumber,
+        assignedAt: new Date().toISOString(),
+      };
+
+      // Update or insert the full document layout into your local database
+      await db.collection("deals").updateOne(
+        { deal_id: id },
+        { $set: fullDealPayload },
+        { upsert: true }
+      );
+
+      console.log(`🎯 Complete Deal payload for [${id}] successfully mapped to surveyor: ${surveyorNumber}`);
+
+      // 2. Look up the specific surveyor's profile to get their FCM tokens
+      const surveyorProfile = await db.collection("userDetails").findOne({
+        "UserInfo.phoneNo": surveyorNumber,
+        "UserInfo.role": "surveyor"
+      });
+
+      if (!surveyorProfile) {
+        console.log(`⚠️ Assignment saved, but surveyor profile not found for number: ${surveyorNumber}`);
+        return c.json({ success: true, message: "Deal assigned locally, but surveyor profile missing." }, 200);
+      }
+
+      // 3. Extract tokens from the surveyor's devices array
+      let surveyorTokens = [];
+      const devices = surveyorProfile.PlatformInfo?.devices;
+      if (devices && Array.isArray(devices)) {
+        devices.forEach((device) => {
+          if (device.fcmToken) {
+            surveyorTokens.push(device.fcmToken);
+          }
+        });
+      }
+
+      // 4. Send targeted push notification to this specific surveyor
+      if (surveyorTokens.length > 0) {
+        const message = {
+          notification: {
+            title: "New Job Assigned! 📋",
+            body: `You have been assigned to site survey: ${fullDealPayload.deal_name}.`,
+          },
+          data: {
+            deal_id: id,
+            click_action: "FLUTTER_NOTIFICATION_CLICK",
+            type: "ASSIGNMENT"
+          },
+          tokens: surveyorTokens,
+        };
+
+        const response = await admin.messaging().sendEachForMulticast(message);
+        console.log(`🚀 Notification sent to surveyor (${surveyorNumber}). Success count: ${response.successCount}`);
+      } else {
+        console.log(`⚠️ Surveyor found, but no active FCM tokens registered for phone: ${surveyorNumber}`);
+      }
+
+      return c.json({ success: true, message: "Deal successfully assigned and surveyor notified with full record fields." }, 200);
+    });
+
+  } catch (err) {
+    console.error("❌ Assignment Endpoint Error:", err.message);
+    return c.json({ error: "Internal server error during assignment pipeline" }, 500);
+  }
+};
+
+
+export const getSurveyorDeals = async (c) => {
+  try {
+    // Grab the logged-in surveyor's mobile number sent from their app
+    const { surveyorNumber } = c.req.query();
+
+    if (!surveyorNumber) {
+      return c.json({ error: "Missing surveyor identity verification parameter" }, 400);
+    }
+
+    return await withDatabase(MONGODB_URI, async (db) => {
+      
+      // Query the deals collection looking strictly for matches against their phone number
+      const assignedDeals = await db.collection("deals")
+        .find({ assignedTo: surveyorNumber })
+        .sort({ assignedAt: -1 }) // Sort so newest jobs pop up first
+        .toArray();
+
+      console.log(`📱 Surveyor Workspace [${surveyorNumber}] loaded. Sent back ${assignedDeals.length} detailed tasks.`);
+
+      // Send the entire structure back exactly how the UI models expect it
+      return c.json({ success: true, deals: assignedDeals }, 200);
+    });
+
+  } catch (err) {
+    console.error("❌ Fetch Surveyor Dashboard Exception:", err.message);
+    return c.json({ error: "Failed to pull surveyor task workspace" }, 500);
   }
 };
