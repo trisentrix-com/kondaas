@@ -124,71 +124,14 @@ export const getCurrentLocation = async (c) => {
   }
 };
 
-export const createInstallerProduct = async (c) => {
-  try {
-    const body = await c.req.json();
-    const { mobile, productName, productPrice, manufacturedDate } = body;
-
-    // 1. Full Payload Validation
-    if (!mobile || !productName || productPrice === undefined || productPrice === null || !manufacturedDate) {
-      return c.json({ 
-        error: "Validation Error: 'mobile', 'productName', 'productPrice', and 'manufacturedDate' are all required fields." 
-      }, 400);
-    }
-
-    // 2. Data Sanitization & Formatting
-    const cleanedMobile = String(mobile).trim();
-    const cleanedProductName = String(productName).trim();
-    
-    // Validate Price
-    const parsedPrice = parseFloat(productPrice);
-    if (isNaN(parsedPrice) || parsedPrice < 0) {
-      return c.json({ error: "Validation Error: 'productPrice' must be a valid positive number." }, 400);
-    }
-
-    // Validate and Parse Manufacturing Date
-    const parsedMfgDate = new Date(manufacturedDate);
-    if (isNaN(parsedMfgDate.getTime())) {
-      return c.json({ error: "Validation Error: 'manufacturedDate' is invalid. Please use a standard format (e.g., YYYY-MM-DD)." }, 400);
-    }
-
-    // 3. Persist to MongoDB Atlas
-    return await withDatabase(MONGODB_URI, async (db) => {
-      const collection = db.collection("installer-products");
-
-      const newInstallerRecord = {
-        mobile: cleanedMobile,
-        productName: cleanedProductName,
-        productPrice: parsedPrice,
-        manufacturedDate: parsedMfgDate,
-        createdAt: new Date(), // Record tracking timestamp,
-        status: "pickup" 
-      };
-
-      console.log(`📦 Storing comprehensive Installer product details for mobile: ${cleanedMobile}...`);
-      
-      const insertResult = await collection.insertOne(newInstallerRecord);
-
-      return c.json({
-        success: true,
-        message: "Installer product and pricing records successfully stored.",
-        recordId: insertResult.insertedId
-      }, 201);
-    });
-
-  } catch (err) {
-    console.error("❌ Installer Product Capture Exception:", err.message);
-    return c.json({ error: "Internal server error" }, 500);
-  }
-};
 
 export const getLogisticProducts = async (c) => {
   try {
-    console.log("📡 Fetching comprehensive list of logistic-products from Atlas matrix...");
+    console.log("📡 Fetching comprehensive list of kondaas-products from Atlas matrix...");
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      // 1. Target the specific logistic-products collection
-      const products = await db.collection("logistic-products")
+      // 1. Target the specific kondaas-products collection
+      const products = await db.collection("kondaas-products")
         .find({})
         .toArray();
 

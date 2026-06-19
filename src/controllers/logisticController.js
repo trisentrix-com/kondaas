@@ -127,45 +127,26 @@ export const getCurrentLocation = async (c) => {
 export const createLogisticsProduct = async (c) => {
   try {
     const body = await c.req.json();
-    const { mobile, productName, productPrice, manufacturedDate } = body;
 
-    // 1. Full Payload Validation
-    if (!mobile || !productName || productPrice === undefined || productPrice === null || !manufacturedDate) {
+    // 1. Basic Payload Validation
+    if (!body || Object.keys(body).length === 0) {
       return c.json({ 
-        error: "Validation Error: 'mobile', 'productName', 'productPrice', and 'manufacturedDate' are all required fields." 
+        error: "Validation Error: Request body is empty. No data received." 
       }, 400);
     }
 
-    // 2. Data Sanitization & Formatting
-    const cleanedMobile = String(mobile).trim();
-    const cleanedProductName = String(productName).trim();
-    
-    // Validate Price
-    const parsedPrice = parseFloat(productPrice);
-    if (isNaN(parsedPrice) || parsedPrice < 0) {
-      return c.json({ error: "Validation Error: 'productPrice' must be a valid positive number." }, 400);
-    }
-
-    // Validate and Parse Manufacturing Date
-    const parsedMfgDate = new Date(manufacturedDate);
-    if (isNaN(parsedMfgDate.getTime())) {
-      return c.json({ error: "Validation Error: 'manufacturedDate' is invalid. Please use a standard format (e.g., YYYY-MM-DD)." }, 400);
-    }
-
-    // 3. Persist to MongoDB Atlas
+    // 2. Persist to MongoDB Atlas
     return await withDatabase(MONGODB_URI, async (db) => {
-      const collection = db.collection("logistic-products");
+      const collection = db.collection("kondaas-products");
 
+      // 🚀 THE MAGIC DUMP: Accepts whatever comes here as it is
       const newLogisticsRecord = {
-        mobile: cleanedMobile,
-        productName: cleanedProductName,
-        productPrice: parsedPrice,
-        manufacturedDate: parsedMfgDate,
-        createdAt: new Date(), // Record tracking timestamp,
-        status: "pickup" 
+        ...body,
+        createdAt: new Date(), // Record tracking timestamp
+        status: "picked" 
       };
 
-      console.log(`📦 Storing comprehensive logistics product details for mobile: ${cleanedMobile}...`);
+      console.log(`📦 Storing dynamic product details into kondaas-products...`);
       
       const insertResult = await collection.insertOne(newLogisticsRecord);
 
