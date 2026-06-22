@@ -80,10 +80,18 @@ export const triggerScenarioNotification = async (c) => {
     // 📥 STEP 1 & 3: Extract deal_id alongside the standard notification body
     const { deal_id, surveyorNumber, customerMobile, name, scenarioType, eta, mapsUrl } = await c.req.json();
     
+    // 🧼 Clean and strip phone formatting symbols from customerMobile down to raw numbers
+    let cleanedCustomerMobile = customerMobile ? String(customerMobile).replace(/\D/g, '') : null;
+    
+    // Normalization: Strip India country prefix '91' if present in a 12-digit layout
+    if (cleanedCustomerMobile && cleanedCustomerMobile.length === 12 && cleanedCustomerMobile.startsWith('91')) {
+      cleanedCustomerMobile = cleanedCustomerMobile.substring(2);
+    }
+
     return await withDatabase(MONGODB_URI, async (db) => {
 
       const customerName = name;
-      const whatsappTo = customerMobile;
+      const whatsappTo = cleanedCustomerMobile; // Using the normalized number for WhatsApp routing
       
       const messages = {
         1: `Hello ${customerName}, your Kondaas technician has started. Arrival in ${eta || 'soon'} min. Contact: ${surveyorNumber}.${mapsUrl ? `\n\n📍 Track Location: ${mapsUrl}` : ''}`,
@@ -116,10 +124,11 @@ export const triggerScenarioNotification = async (c) => {
               return;
             }
 
-            const formData = await db.collection("forms").findOne({ mobileNumber: customerMobile });
+            // 🎯 FIXED LOOKUP: Uses cleanedCustomerMobile to perfectly match clean numbers in DB
+            const formData = await db.collection("forms").findOne({ mobileNumber: cleanedCustomerMobile });
             
             if (!formData) {
-              console.error("❌ PDF Cancelled: No entry found in 'forms' collection for this mobile.");
+              console.error(`❌ PDF Cancelled: No entry found in 'forms' collection for clean mobile: ${cleanedCustomerMobile}`);
               return;
             }
 
@@ -174,7 +183,6 @@ export const triggerScenarioNotification = async (c) => {
   }
 };
 
-
 //attendance photo upload handler
 export const handleSurveyorPhotoUpload = async (c) => {
   let temporaryFilePath = null;
@@ -208,7 +216,6 @@ export const handleSurveyorPhotoUpload = async (c) => {
     temporaryFilePath = path.join(uploadDir, `temp_${Date.now()}_${photoFile.name}`);
     fs.writeFileSync(temporaryFilePath, buffer);
 
-    // Passes everything over to our updated 3-tier folder structure processing tree
     const workDriveUrl = await uploadSurveyorAttendancePhoto(temporaryFilePath, phoneNo, time, fileExt);
 
     return c.json({
@@ -236,7 +243,6 @@ export const handleSurveyorPhotoUpload = async (c) => {
     }
   }
 };
-
 //for leads dynamic folder with yyyy-mm-dd date structure in zoho tree layout
 
 
