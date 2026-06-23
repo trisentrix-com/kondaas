@@ -221,6 +221,22 @@ export const getOrCreateDateFolder = async (dateString, mobileNumber) => {
 
 
 //Lead details 
+const findExistingLeadsFolder = async (folderName, parentFolderId, accessToken) => {
+  try {
+    const response = await axios.get(`https://www.zohoapis.in/workdrive/api/v1/folders/${parentFolderId}/files`, {
+      headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
+    });
+
+    const items = response.data?.data || [];
+    const exactMatch = items.find(item => item.attributes?.name === folderName && item.attributes?.type === 'folder');
+    
+    return exactMatch ? exactMatch.id : null;
+  } catch (err) {
+    console.error(`⚠️ Error scanning Zoho folder for matching name "${folderName}":`, err.message);
+    return null;
+  }
+};
+
 export const getOrCreateLeadsSEFolder = async (dealId, subfolderType) => {
   // 🎯 Master Anchor: Double check this matches your Zoho folder properties link!
   const LEADS_SE_ROOT_ID = "sfoeja4258e75cef24ca7bcc99b036b7610a7";
@@ -231,7 +247,7 @@ export const getOrCreateLeadsSEFolder = async (dealId, subfolderType) => {
   return await withDatabase(MONGODB_URI, async (db) => {
     const cacheCollection = db.collection("zoho_folders");
 
-    // 🔎 STEP 1: Check MongoDB Cache
+    // 🔎 STEP 1: Check MongoDB Cache for the specific subfolder
     const cachedSubfolder = await cacheCollection.findOne({ 
       type: "leads_se_subfolder", 
       path: fullSubfolderPathKey 
@@ -242,25 +258,73 @@ export const getOrCreateLeadsSEFolder = async (dealId, subfolderType) => {
       return cachedSubfolder.zohoFolderId;
     }
 
-    console.log(`📝 Cache Miss! First upload for path [${fullSubfolderPathKey}]. Resolving tree via Zoho API...`);
+    console.log(`📝 Cache Miss! Path [${fullSubfolderPathKey}] not cached. Verifying from live storage...`);
     const zAccessToken = await getZohoAccessToken(db);
 
-    // 🔎 STEP 2: Check or Create the Deal's Parent Folder
+    // 🔎 STEP 2: Check, Search, or Create the Deal's Parent Folder
     let dealFolderId;
     const cachedDealFolder = await cacheCollection.findOne({ type: "leads_se_deal", path: dealPathKey });
 
     if (cachedDealFolder) {
       dealFolderId = cachedDealFolder.zohoFolderId;
     } else {
-      console.log(`📁 Creating Deal ID Folder "${dealId}" inside Leads_SE Root [${LEADS_SE_ROOT_ID}]...`);
-      
+      // 🛡️ Live Verification check inside Zoho before creating a duplicate
+      dealFolderId = await findExistingLeadsFolder(String(dealId), LEADS_SE_ROOT_ID, zAccessToken);
+
+      if (dealFolderId) {
+        console.log(`🎯 Found existing Deal Folder directly inside Zoho WorkDrive (${dealId}). Re-caching...`);
+      } else {
+        console.log(`📁 Creating Deal ID Folder "${dealId}" inside Leads_SE Root...`);
+        try {
+          const dealRes = await axios.post('https://www.zohoapis.in/workdrive/api/v1/files', {
+            data: {
+              type: "files",
+              attributes: {
+                name: String(dealId),
+                parent_id: LEADS_SE_ROOT_ID
+              }
+            }
+          }, {
+            headers: { 
+              'Authorization': `Zoho-oauthtoken ${zAccessToken}`,
+              'Content-Type': 'application/json'
+            }
+          });
+
+          dealFolderId = dealRes.data?.data?.id || dealRes.data?.data?.attributes?.id;
+        } catch (err) {
+          if (err.isAxiosError && err.response) {
+            console.error("❌ Zoho API Refused Deal Folder Creation!");
+            console.error("🔹 Details:", JSON.stringify(err.response.data, null, 2));
+          }
+          throw err;
+        }
+      }
+
+      if (!dealFolderId) throw new Error("Failed to resolve dealFolderId.");
+
+      // Sync deal cache record atomically
+      await cacheCollection.updateOne(
+        { type: "leads_se_deal", path: dealPathKey },
+        { $set: { zohoFolderId: dealFolderId, createdAt: new Date() } },
+        { upsert: true }
+      );
+    }
+
+    // 🔎 STEP 3: Check, Search, or Create the requested Subfolder ("Survey" or "Invoice")
+    let subfolderFolderId = await findExistingLeadsFolder(subfolderType, dealFolderId, zAccessToken);
+
+    if (subfolderFolderId) {
+      console.log(`🎯 Found existing Subfolder [${subfolderType}] directly inside Zoho. Re-caching...`);
+    } else {
+      console.log(`📁 Creating Subfolder "${subfolderType}" inside Deal folder [${dealFolderId}]...`);
       try {
-        const dealRes = await axios.post('https://www.zohoapis.in/workdrive/api/v1/files', {
+        const subfolderRes = await axios.post('https://www.zohoapis.in/workdrive/api/v1/files', {
           data: {
             type: "files",
             attributes: {
-              name: String(dealId),
-              parent_id: LEADS_SE_ROOT_ID
+              name: subfolderType,
+              parent_id: dealFolderId
             }
           }
         }, {
@@ -270,71 +334,26 @@ export const getOrCreateLeadsSEFolder = async (dealId, subfolderType) => {
           }
         });
 
-        dealFolderId = dealRes.data?.data?.id || dealRes.data?.data?.attributes?.id;
-
-        if (!dealFolderId) {
-          throw new Error("Failed to extract dealFolderId from Zoho response schema.");
-        }
-
-        await cacheCollection.insertOne({
-          type: "leads_se_deal",
-          path: dealPathKey,
-          zohoFolderId: dealFolderId,
-          createdAt: new Date()
-        });
-
+        subfolderFolderId = subfolderRes.data?.data?.id || subfolderRes.data?.data?.attributes?.id;
       } catch (err) {
         if (err.isAxiosError && err.response) {
-          console.error("❌ Zoho API Refused Folder Creation (Step 2)!");
-          console.error("🔹 Status Code:", err.response.status);
-          console.error("🔹 Error Details:", JSON.stringify(err.response.data, null, 2));
+          console.error(`❌ Zoho API Refused Subfolder [${subfolderType}] Creation!`);
+          console.error("🔹 Details:", JSON.stringify(err.response.data, null, 2));
         }
         throw err;
       }
     }
 
-    // 🔎 STEP 3: Create the requested Subfolder
-    console.log(`📁 Creating Subfolder "${subfolderType}" inside Deal folder [${dealFolderId}]...`);
-    
-    try {
-      const subfolderRes = await axios.post('https://www.zohoapis.in/workdrive/api/v1/files', {
-        data: {
-          type: "files",
-          attributes: {
-            name: subfolderType,
-            parent_id: dealFolderId
-          }
-        }
-      }, {
-        headers: { 
-          'Authorization': `Zoho-oauthtoken ${zAccessToken}`,
-          'Content-Type': 'application/json'
-        }
-      });
+    if (!subfolderFolderId) throw new Error(`Failed to resolve subfolderFolderId for ${subfolderType}.`);
 
-      const subfolderFolderId = subfolderRes.data?.data?.id || subfolderRes.data?.data?.attributes?.id;
+    // Sync subfolder cache record atomically
+    await cacheCollection.updateOne(
+      { type: "leads_se_subfolder", path: fullSubfolderPathKey },
+      { $set: { zohoFolderId: subfolderFolderId, createdAt: new Date() } },
+      { upsert: true }
+    );
 
-      if (!subfolderFolderId) {
-        throw new Error(`Failed to extract subfolderFolderId for ${subfolderType} from Zoho response schema.`);
-      }
-
-      await cacheCollection.insertOne({
-        type: "leads_se_subfolder",
-        path: fullSubfolderPathKey,
-        zohoFolderId: subfolderFolderId,
-        createdAt: new Date()
-      });
-
-      return subfolderFolderId;
-
-    } catch (err) {
-      if (err.isAxiosError && err.response) {
-        console.error(`❌ Zoho API Refused Subfolder [${subfolderType}] Creation (Step 3)!`);
-        console.error("🔹 Status Code:", err.response.status);
-        console.error("🔹 Error Details:", JSON.stringify(err.response.data, null, 2));
-      }
-      throw err;
-    }
+    return subfolderFolderId;
   });
 };
 

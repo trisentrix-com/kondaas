@@ -1,7 +1,8 @@
 import { withDatabase, Binary, ObjectId, getSystemKeys } from '../utils/config.js';
 import { generatePDF } from '../utils/pdfGenerator.js';
+import { getZohoAccessToken } from '../utils/zohoAuth.js';
 import { uploadToZohoWorkDrive,uploadSurveyorAttendancePhoto,getOrCreateLeadsSEFolder } from '../utils/uploadToZohoWorkDrive.js';
-import { getInvoiceTemplate } from '../templates/invoiceTemplate.js';
+import { getInvoiceTemplate,getSurveyReportTemplate } from '../templates/invoiceTemplate.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -77,21 +78,17 @@ const processWhatsAppNotification = async (notificationId) => {
  */
 export const triggerScenarioNotification = async (c) => {
   try {
-    // 📥 STEP 1 & 3: Extract deal_id alongside the standard notification body
     const { deal_id, surveyorNumber, customerMobile, name, scenarioType, eta, mapsUrl } = await c.req.json();
     
-    // 🧼 Clean and strip phone formatting symbols from customerMobile down to raw numbers
+    // 🧼 Clean and strip phone formatting symbols
     let cleanedCustomerMobile = customerMobile ? String(customerMobile).replace(/\D/g, '') : null;
-    
-    // Normalization: Strip India country prefix '91' if present in a 12-digit layout
     if (cleanedCustomerMobile && cleanedCustomerMobile.length === 12 && cleanedCustomerMobile.startsWith('91')) {
       cleanedCustomerMobile = cleanedCustomerMobile.substring(2);
     }
 
     return await withDatabase(MONGODB_URI, async (db) => {
-
       const customerName = name;
-      const whatsappTo = cleanedCustomerMobile; // Using the normalized number for WhatsApp routing
+      const whatsappTo = cleanedCustomerMobile; 
       
       const messages = {
         1: `Hello ${customerName}, your Kondaas technician has started. Arrival in ${eta || 'soon'} min. Contact: ${surveyorNumber}.${mapsUrl ? `\n\n📍 Track Location: ${mapsUrl}` : ''}`,
@@ -100,7 +97,7 @@ export const triggerScenarioNotification = async (c) => {
         4: `Hello ${customerName}, your technician has completed the work. Thank you for choosing Kondaas! and kindly give rating.`
       };
 
-      // --- STEP 2: ALWAYS SEND THE TEXT MESSAGE FIRST ---
+      // --- STEP 1: ALWAYS SEND THE TEXT MESSAGE FIRST ---
       const textResult = await db.collection("notifications").insertOne({
         from: "Kondaas_System",
         to: whatsappTo,
@@ -112,69 +109,124 @@ export const triggerScenarioNotification = async (c) => {
       });
       processWhatsAppNotification(textResult.insertedId).catch(err => console.error(err));
 
-      // --- STEP 3: IF SCENARIO 4, FETCH FORM DATA & GENERATE PDF FOR ZOHO WORKDRIVE ---
+      // --- STEP 2: SCENARIO 4 HEAVY BACKGROUND COMPILATION TREE ---
       if (scenarioType === 4) {
         (async () => {
           try {
-            console.log("📄 Heavy Background Process: Generating Invoice PDF for Zoho Workspace...");
-            
-            // Validation: Make sure we don't try to name a file undefined
             if (!deal_id) {
-              console.error("❌ PDF Cancelled: Missing 'deal_id' in payload request.");
+              console.error("❌ Document Generation Cancelled: Missing 'deal_id' in payload request.");
               return;
             }
 
-            // 🎯 FIXED LOOKUP: Uses cleanedCustomerMobile to perfectly match clean numbers in DB
+            console.log(`📄 Fetching forms record for clean mobile: ${cleanedCustomerMobile}...`);
             const formData = await db.collection("forms").findOne({ mobileNumber: cleanedCustomerMobile });
             
             if (!formData) {
-              console.error(`❌ PDF Cancelled: No entry found in 'forms' collection for clean mobile: ${cleanedCustomerMobile}`);
+              console.error(`❌ Document Generation Cancelled: No form entry found for mobile: ${cleanedCustomerMobile}`);
               return;
             }
 
-            // 🎯 FILE NAME OVERRIDE: Keep raw deal_id alone as the filename string
-            const fileName = `${deal_id}.pdf`; 
-            const filePath = path.join(process.cwd(), fileName);
-            
-            // Set up invoice view parameters for the HTML rendering layout
+            // Bind transaction details into form reference object memory 
+            formData.deal_id = deal_id;
             formData.invoiceNo = `INV-${deal_id}`;
             formData.invoiceDate = new Date().toLocaleDateString('en-IN');
 
-            const html = getInvoiceTemplate(formData); 
-            await generatePDF(html, filePath);
+            // -------------------------------------------------------------
+            // 📑 PART A: GENERATE & UPLOAD THE SITE SURVEY TECHNICAL REPORT
+            // -------------------------------------------------------------
+            console.log("🛠️ Compiling Technical Survey Report PDF...");
+            const surveyFileName = `Survey_Report_${deal_id}.pdf`;
+            const surveyFilePath = path.join(process.cwd(), surveyFileName);
+
+            const surveyHtml = getSurveyReportTemplate(formData);
+            await generatePDF(surveyHtml, surveyFilePath);
+
+            console.log(`🔄 Resolving Zoho WorkDrive "Survey" Folder for Deal ID [${deal_id}]...`);
+            const targetSurveyFolderId = await getOrCreateLeadsSEFolder(deal_id, "Survey");
             
-            // 🔄 RESOLVE & UPLOAD: Resolve the 3-Tier path tree (Leads_SE -> deal_id -> Invoice)
-            console.log(`🔍 Resolving Zoho Leads_SE path for Deal ID [${deal_id}] Invoice subfolder...`);
-            const targetInvoiceFolderId = await getOrCreateLeadsSEFolder(deal_id, "Invoice");
-            
-            // Upload directly into the verified target folder location
-            const finalPublicUrl = await uploadToZohoWorkDrive(filePath, fileName, targetInvoiceFolderId);
-            
-            // Clean local files from node process memory disk space
-            fs.unlink(filePath, (err) => {
-              if (err) console.error("❌ Error deleting local temporary PDF:", err.message);
-              else console.log(`🗑️ Cleaned up local workspace file: ${fileName}`);
+            const surveyPublicUrl = await uploadToZohoWorkDrive(surveyFilePath, surveyFileName, targetSurveyFolderId);
+            console.log(`✅ Survey Report synced successfully to Zoho: ${surveyPublicUrl}`);
+
+            // Clear local temporary survey workspace file
+            fs.unlink(surveyFilePath, (err) => {
+              if (err) console.error("❌ Error deleting local temporary survey PDF:", err.message);
             });
 
+            // ----------------------------------------------------------------------
+            // 🎯 LINK ATTACHMENT: ATTACH WORKDRIVE URL TO ZOHO CRM
+            // ----------------------------------------------------------------------
+            try {
+              console.log(`📡 Attaching survey report link to Zoho CRM Deals for ID: ${deal_id}`);
+              const zohoToken = await getZohoAccessToken(db);
+
+              const linkPayload = {
+                id: deal_id,
+                Site_Survey: surveyPublicUrl // Attach the fresh generated file URL
+              };
+
+              const crmResponse = await fetch(`https://www.zohoapis.in/crm/v8/Deals/${deal_id}`, {
+                method: "PUT",
+                headers: {
+                  "Authorization": `Zoho-oauthtoken ${zohoToken}`,
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ data: [linkPayload] })
+              });
+
+              if (!crmResponse.ok) {
+                const errDetails = await crmResponse.text();
+                console.error("❌ Zoho CRM Link Attachment Blocked:", errDetails);
+              } else {
+                console.log(`✅ Site Survey WorkDrive link updated on Zoho record.`);
+              }
+            } catch (crmErr) {
+              console.error("⚠️ Non-blocking warning: CRM link attachment dropped:", crmErr.message);
+            }
+
+            // -------------------------------------------------------------
+            // 📑 PART C: GENERATE & UPLOAD THE COMMERCIAL INVOICE
+            // -------------------------------------------------------------
+            console.log("💰 Compiling Commercial Invoice PDF...");
+            const invoiceFileName = `${deal_id}.pdf`; 
+            const invoiceFilePath = path.join(process.cwd(), invoiceFileName);
+
+            const invoiceHtml = getInvoiceTemplate(formData); 
+            await generatePDF(invoiceHtml, invoiceFilePath);
+            
+            console.log(`🔄 Resolving Zoho WorkDrive "Invoice" Folder for Deal ID [${deal_id}]...`);
+            const targetInvoiceFolderId = await getOrCreateLeadsSEFolder(deal_id, "Invoice");
+            
+            const invoicePublicUrl = await uploadToZohoWorkDrive(invoiceFilePath, invoiceFileName, targetInvoiceFolderId);
+            console.log(`✅ Invoice synced successfully to Zoho: ${invoicePublicUrl}`);
+            
+            // Clear local temporary invoice workspace file
+            fs.unlink(invoiceFilePath, (err) => {
+              if (err) console.error("❌ Error deleting local temporary invoice PDF:", err.message);
+            });
+
+            // -------------------------------------------------------------
+            // 📥 PART D: QUEUE INVOICE WHATSAPP DELIVERY TO CLIENT
+            // -------------------------------------------------------------
             const pdfResult = await db.collection("notifications").insertOne({
               from: "Kondaas_System",
               to: whatsappTo,
               mode: "whatsapp",
-              content: new Binary(Buffer.from(finalPublicUrl.trim(), 'utf8')),
+              content: new Binary(Buffer.from(invoicePublicUrl.trim(), 'utf8')),
               contentType: "pdf",
               caption: "Here is your formal invoice. Thank you!",
               status: "pending",
               createdAt: new Date()
             });
             processWhatsAppNotification(pdfResult.insertedId).catch(err => console.error(err));
+
           } catch (pdfErr) {
-            console.error("❌ Background PDF Work Failed:", pdfErr);
+            console.error("❌ Background PDF Document Tree Generation Failed:", pdfErr);
           }
         })();
       }
 
       return c.json({ 
-        message: `Scenario ${scenarioType} message sent.`, 
+        message: `Scenario ${scenarioType} flow executed.`, 
         id: textResult.insertedId 
       });
     });

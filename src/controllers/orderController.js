@@ -98,14 +98,14 @@ export const addOrder = async (c) => {
 export const rejectOrder = async (c) => {
   try {
     const body = await c.req.json();
-    const { customerMobile, surveyorNumber, comment, receivedAt,name,address } = body;
+    const { customerMobile, surveyorNumber, comment, receivedAt, name, address } = body;
 
     if (!comment) {
       return c.json({ error: "Rejection reason (comment) is required" }, 400);
     }
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      // Safe local insert maintaining standard auditing schemas exclusively
+      // 1. Safe local insert maintaining standard auditing schemas exclusively
       const adminRejectPayload = {
         name: name,
         address: address,
@@ -117,8 +117,50 @@ export const rejectOrder = async (c) => {
 
       await db.collection("admin_reject").insertOne(adminRejectPayload);
       console.log(`✅ Rejection tracked locally in admin_reject collection for surveyor: ${surveyorNumber}`);
+
+      // 2. Look up active Administrator accounts to fetch their FCM tokens
+      try {
+        const admins = await db.collection("userDetails").find({
+          "UserInfo.role": "admin"
+        }).toArray();
+
+        let adminTokens = [];
+        
+        admins.forEach((adminUser) => {
+          const devices = adminUser.PlatformInfo?.devices;
+          if (devices && Array.isArray(devices)) {
+            devices.forEach((device) => {
+              if (device.fcmToken) {
+                adminTokens.push(device.fcmToken);
+              }
+            });
+          }
+        });
+
+        // 3. Send standard push notification exactly like your assignment style
+        if (adminTokens.length > 0) {
+          const message = {
+            notification: {
+              title: "Job Rejected by Surveyor! ⚠️",
+              body: `Surveyor ${surveyorNumber} rejected ${name || 'Customer'}. Reason: ${comment}`,
+            },
+            data: {
+              click_action: "FLUTTER_NOTIFICATION_CLICK",
+              type: "REJECTION"
+            },
+            tokens: adminTokens,
+          };
+
+          const response = await admin.messaging().sendEachForMulticast(message);
+          console.log(`🚀 Rejection alert pushed to Admin devices. Success count: ${response.successCount}`);
+        } else {
+          console.log(`⚠️ Rejection recorded, but no active Admin FCM tokens found.`);
+        }
+      } catch (pushErr) {
+        console.error("⚠️ Non-blocking warning: Failed to send Admin notification:", pushErr.message);
+      }
       
-      return c.json({ success: true, message: "Order rejection cataloged locally." });
+      return c.json({ success: true, message: "Order rejection cataloged and Admin notified." });
     });
   } catch (err) {
     console.error("❌ RejectOrder Exception Error:", err.message);
@@ -178,7 +220,7 @@ export const updateOrder = async (c) => {
   try {
     const body = await c.req.json();
     
-    // 🛑 Strict Business Rule: Explicit Zoho 'id' string is mandatory to target the right lead
+    // 🛑 Strict Business Rule: Explicit Zoho 'id' string is mandatory to target the right deal record
     if (!body.id) {
       return c.json({ error: "Validation Error: A specific Zoho 'id' field is required to update an order." }, 400);
     }
@@ -189,23 +231,32 @@ export const updateOrder = async (c) => {
       // 🔐 Grab active authorization credentials dynamically
       const zohoToken = await getZohoAccessToken(db);
 
-      // 📦 Build the pure dynamic update payload
-      const zohoPayload = {
-        data: [
-          {
-            // Inject the specific ID inside the data block array as mandated by Zoho API guidelines
-            id: targetZohoId,
-
-            // 🚀 Directly dump every single other field passed from the frontend completely as-is
-            ...body
-          }
-        ]
+      // 🛠️ Build the dynamic fields payload for Zoho CRM
+      const dealUpdateFields = {
+        id: targetZohoId
       };
 
-      console.log(`📡 Forwarding pure target update to Zoho CRM for explicit Record ID: ${targetZohoId}`);
+      // 💾 Build a separate payload for MongoDB update tracking
+      const mongoUpdateFields = {};
 
-      // 3. Make the PUT update request directly to that specific record's endpoint string
-      const response = await fetch(`https://www.zohoapis.in/crm/v8/Leads/${targetZohoId}`, {
+      // Loop through all data fields passed from the frontend and map them 1-to-1
+      for (const [key, value] of Object.entries(body)) {
+        // Exclude 'id' and any invalid empty properties
+        if (key !== 'id' && value !== undefined && value !== null) {
+          dealUpdateFields[key] = value;
+          mongoUpdateFields[key] = value; // Keep local db identical
+        }
+      }
+
+      // 📦 Build the dynamic structured payload matching Zoho API specifications
+      const zohoPayload = {
+        data: [dealUpdateFields]
+      };
+
+      console.log(`📡 Forwarding ordinary form update to Zoho CRM Deals Module for Record ID: ${targetZohoId}`);
+
+      // --- STEP 1: UPDATE ZOHO CRM ---
+      const response = await fetch(`https://www.zohoapis.in/crm/v8/Deals/${targetZohoId}`, {
         method: "PUT",
         headers: {
           "Authorization": `Zoho-oauthtoken ${zohoToken}`,
@@ -217,18 +268,43 @@ export const updateOrder = async (c) => {
       if (!response.ok) {
         const errDetails = await response.text();
         console.error("❌ Zoho Modification Blocked:", errDetails);
-        return c.json({ error: "Failed to update record inside Zoho CRM module.", details: errDetails }, 500);
+        return c.json({ error: "Failed to update record inside Zoho CRM Deals module.", details: errDetails }, 500);
+      }
+
+      const resJson = await response.json();
+      
+      // Double check internal action status
+      if (resJson?.data?.[0]?.status === "error") {
+        console.error("❌ Zoho internal rejection:", JSON.stringify(resJson));
+        return c.json({ error: "Zoho CRM rejected the payload properties.", details: resJson.data[0] }, 400);
+      }
+
+      // --- STEP 2: UPDATE LOCAL MONGODB ---
+      // Only proceed with database writing if the master record in Zoho updated successfully.
+      if (Object.keys(mongoUpdateFields).length > 0) {
+        console.log(`💾 Mirroring data update to local database for Deal ID: ${targetZohoId}`);
+        
+        await db.collection("forms").updateOne(
+          { deal_id: targetZohoId }, // Finds the matching client form based on the linked Zoho Deal ID
+          { 
+            $set: {
+              ...mongoUpdateFields,
+              updatedAt: new Date() // Appends a tracking timestamp
+            } 
+          },
+          { upsert: false } // Change to true if you want to create a form if it somehow doesn't exist
+        );
       }
 
       return c.json({ 
         success: true, 
-        message: "Targeted Zoho CRM profile data synchronized cleanly!", 
+        message: "Targeted Deal profile synchronized cleanly in both Zoho CRM and Database!", 
         id: targetZohoId 
       });
     });
   } catch (err) {
     console.error("❌ UpdateOrder Error Exception:", err.message);
-    return c.json({ error: "Internal server error" }, 500);
+    return c.json({ error: "Internal server error", details: err.message }, 500);
   }
 };
 
@@ -487,11 +563,6 @@ export const handleZohoDealWebhook = async (c) => {
         payload = { ...payload, ...formObj };
       }
     }
-
-    console.log("==================== 🔔 ZOHO WEBHOOK TRIPPED ====================");
-    console.log("Incoming Payload Data:", JSON.stringify(payload, null, 2));
-    console.log("================================================================");
-
     // Execute database operations safely using your wrapper
     return await withDatabase(MONGODB_URI, async (db) => {
       
