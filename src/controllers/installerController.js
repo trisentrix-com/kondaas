@@ -1,4 +1,5 @@
 import { withDatabase } from '../utils/config.js'; 
+import admin from "firebase-admin";
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -150,5 +151,72 @@ export const getLogisticProducts = async (c) => {
       error: "Internal server error fetching logistics inventory catalog",
       details: err.message 
     }, 500);
+  }
+};
+
+
+export const notifyInstallerETA = async (c) => {
+  try {
+    const body = await c.req.json();
+    const { logisticMemberNumber, installerNumber, eta } = body;
+
+    // Fast validation check
+    if (!installerNumber || !eta) {
+      return c.json({ error: "Missing required fields: installerNumber or eta" }, 400);
+    }
+
+    return await withDatabase(MONGODB_URI, async (db) => {
+      
+      // 1. Look up the targeted installer's profile to fetch their active device tokens
+      const installerProfile = await db.collection("userDetails").findOne({
+        "UserInfo.phoneNo": installerNumber,
+        "UserInfo.role": "installer"
+      });
+
+      if (!installerProfile) {
+        console.log(`⚠️ Installer profile not found for phone number: ${installerNumber}`);
+        return c.json({ error: "Target installer profile not found" }, 404);
+      }
+
+      // 2. Extract tokens from the installer's devices array
+      let installerTokens = [];
+      const devices = installerProfile.PlatformInfo?.devices;
+      if (devices && Array.isArray(devices)) {
+        devices.forEach((device) => {
+          if (device.fcmToken) {
+            installerTokens.push(device.fcmToken);
+          }
+        });
+      }
+
+      // 3. Send standard push notification to this specific installer
+      if (installerTokens.length > 0) {
+        const message = {
+          notification: {
+            title: "Delivery Coming Your Way! 🚚",
+            body: `Logistics member (${logisticMemberNumber || 'Team'}) is arriving. ETA: ${eta}.`,
+          },
+          data: {
+            click_action: "FLUTTER_NOTIFICATION_CLICK",
+            type: "DELIVERY_ETA"
+          },
+          tokens: installerTokens,
+        };
+
+        const response = await admin.messaging().sendEachForMulticast(message);
+        console.log(`🚀 ETA push alert sent to installer (${installerNumber}). Success count: ${response.successCount}`);
+      } else {
+        console.log(`⚠️ Installer found, but no active FCM tokens registered for phone: ${installerNumber}`);
+      }
+
+      return c.json({ 
+        success: true, 
+        message: "Installer successfully notified of incoming logistics arrival." 
+      }, 200);
+    });
+
+  } catch (err) {
+    console.error("❌ NotifyInstallerETA Endpoint Error:", err.message);
+    return c.json({ error: "Internal server error during ETA alert delivery" }, 500);
   }
 };

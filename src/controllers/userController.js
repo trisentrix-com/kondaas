@@ -17,6 +17,7 @@ export const addForm = async (c) => {
     const dataFields = typeof body.data === 'string' ? JSON.parse(body.data) : body;
     const mobileNumber = dataFields.mobileNumber || dataFields.customerDetails?.mobileNumber;
 
+
     if (!mobileNumber) {
       return c.json({ error: "Mobile number is required!" }, 400);
     }
@@ -138,23 +139,32 @@ for (const [key, value] of Object.entries(dataFields)) {
       dealUpdateFields[key] = false;
     } else if (value === true || value === false) {
       dealUpdateFields[key] = value;
-    } else if (
-      typeof value === 'string' && 
-      value.trim() !== '' && 
-      !isNaN(value) && 
-      !isNaN(parseFloat(value))
-    ) {
-      // 🔢 Advanced Number Handling
-      if (!value.includes('.')) {
-        dealUpdateFields[key] = parseInt(value.trim(), 10);
-      } else {
-        dealUpdateFields[key] = parseFloat(value.trim());
-      }
-    } else {
+    } else if (typeof value === 'number') {
+  // Already a number from frontend — force integer for specific fields
+  if (key === 'Consumer_Number') {
+    dealUpdateFields[key] = Math.trunc(value);
+  } else {
+    dealUpdateFields[key] = value;
+  }
+} else if (
+  typeof value === 'string' && 
+  value.trim() !== '' && 
+  !isNaN(value) && 
+  !isNaN(parseFloat(value))
+) {
+  if (key === 'Consumer_Number') {
+    dealUpdateFields[key] = Math.trunc(parseInt(value.trim(), 10));
+  } else if (!value.includes('.')) {
+    dealUpdateFields[key] = parseInt(value.trim(), 10);
+  } else {
+    dealUpdateFields[key] = parseFloat(value.trim());
+  }
+} else {
       dealUpdateFields[key] = value;
     }
   }
 }
+dealUpdateFields['Consumer_Number'] = parseInt(String(dealUpdateFields['Consumer_Number'] ?? '').trim(), 10) || 0;
 
       console.log(`📡 Streaming initial surveyor fields data live to Zoho Deals Profile: ${dealId}`);
 
