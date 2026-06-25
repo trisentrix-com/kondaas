@@ -69,4 +69,4 @@ serve({
 });
 
 // 🕒 START THE BACKGROUND QUEUE RUNNER HERE 
-//startQueueRunner();
+startQueueRunner();

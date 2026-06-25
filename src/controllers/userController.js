@@ -6,6 +6,34 @@ import { uploadToZohoWorkDrive,getOrCreateLeadsSEFolder } from '../utils/uploadT
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
+const uploadToZohoZFS = async (localFilePath, fileName, zohoToken) => {
+  try {
+    const formData = new FormData();
+    const fileBuffer = fs.readFileSync(localFilePath);
+    const fileBlob = new Blob([fileBuffer]);
+    
+    // Standard ZFS upload parameter expects 'file'
+    formData.append('file', fileBlob, fileName);
+
+    const response = await fetch('https://www.zohoapis.in/crm/v8/files', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Zoho-oauthtoken ${zohoToken}`
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(`ZFS Core API HTTP Error: ${response.status}`);
+    }
+
+    const json = await response.json();
+    return json?.data?.[0]?.details?.id || null;
+  } catch (error) {
+    console.error(`❌ Exception inside Zoho ZFS attachment processor for ${fileName}:`, error.message);
+    return null;
+  }
+};
 
 export const addForm = async (c) => {
   const temporaryFilesToClean = [];
@@ -17,12 +45,10 @@ export const addForm = async (c) => {
     const dataFields = typeof body.data === 'string' ? JSON.parse(body.data) : body;
     const mobileNumber = dataFields.mobileNumber || dataFields.customerDetails?.mobileNumber;
 
-
     if (!mobileNumber) {
       return c.json({ error: "Mobile number is required!" }, 400);
     }
 
-    // Extract the raw Zoho Deal record identifier
     const dealId = dataFields.deal_id || dataFields.id || dataFields.deal_id;
     if (!dealId) {
       return c.json({ error: "Validation Error: An explicit 'deal_id' is required to register this form structure." }, 400);
@@ -53,11 +79,9 @@ export const addForm = async (c) => {
           temporaryFilesToClean.push(tempPath);
 
           fs.writeFileSync(tempPath, Buffer.from(await file.arrayBuffer()));
+          console.log(`📸 Streaming EB Bill [${i + 1}/${ebFiles.length}]`);
 
-          const customFileName = `eb bill ${i + 1}${ext}`;
-          console.log(`📸 Streaming EB Bill [${i + 1}/${ebFiles.length}] as: ${customFileName}`);
-
-          const url = await uploadToZohoWorkDrive(tempPath, customFileName, targetEbFolderId);
+          const url = await uploadToZohoWorkDrive(tempPath, file.name, targetEbFolderId);
           uploadedEbUrls.push(url);
         }
       }
@@ -78,11 +102,9 @@ export const addForm = async (c) => {
           temporaryFilesToClean.push(tempPath);
 
           fs.writeFileSync(tempPath, Buffer.from(await file.arrayBuffer()));
+          console.log(`📸 Streaming Site Photo [${i + 1}/${siteFiles.length}]`);
 
-          const customFileName = `${i + 1}${ext}`;
-          console.log(`📸 Streaming Site Photo [${i + 1}/${siteFiles.length}] as: ${customFileName}`);
-
-          const url = await uploadToZohoWorkDrive(tempPath, customFileName, targetSiteFolderId);
+          const url = await uploadToZohoWorkDrive(tempPath, file.name, targetSiteFolderId);
           uploadedSiteUrls.push(url);
         }
       }
@@ -105,68 +127,107 @@ export const addForm = async (c) => {
         createdAt: new Date().toISOString()
       };
 
-      // A. Commit Record safely to MongoDB local Atlas cluster
       await db.collection("forms").insertOne(finalDocument);
       console.log(`✅ Form completely matched and stored to MongoDB Atlas!`);
 
-      // B. Instantly stream data fields dynamically up to Zoho Deals Module module
       const zohoToken = await getZohoAccessToken(db);
+
+      // 🔍 Dynamic Decoupling Lookup: Source properties directly from the target templates workspace
+      const schemaConfig = await db.collection("templates").findOne({ id: "solarv1" });
+      const registeredProperties = schemaConfig?.schema?.properties || {};
 
       const dealUpdateFields = {
         id: dealId
       };
 
-      // Extract every valid field parameter passed by surveyor, auto-casting types dynamically
-for (const [key, value] of Object.entries(dataFields)) {
-  if (
-    key !== 'id' && 
-    key !== 'deal_id' && 
-    key !== '_id' && 
-    value !== undefined && 
-    value !== null
-  ) {
-    // 🧼 Clean string properties to safeguard evaluation checks
-    const normalizedValue = typeof value === 'string' ? value.trim().toLowerCase() : value;
+      // Extract every field parameter passed by surveyor, auto-casting types dynamically
+      for (const [key, value] of Object.entries(dataFields)) {
+        if (
+          key !== 'id' && 
+          key !== 'deal_id' && 
+          key !== '_id' && 
+          value !== undefined && 
+          value !== null
+        ) {
+          const normalizedValue = typeof value === 'string' ? value.trim().toLowerCase() : value;
+          const fieldDefinition = registeredProperties[key] || {};
 
-    // 🛑 EXCLUSION FILTER: Keep Latitude/Longitude as pure strings for Zoho Single Line fields
-    if (key === 'Latitude' || key === 'Longitude') {
-      dealUpdateFields[key] = String(value).trim();
+          // 🖼️ Case A: Base64 data-url converter & background ZFS file attachment pipeline handler
+       if (fieldDefinition.format === 'data-url' && typeof value === 'string' && value.startsWith('data:image')) {
+  try {
+    const base64Data = value.replace(/^data:image\/\w+;base64,/, "");
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+    
+    const tempPath = path.join(uploadDir, `temp_extracted_sig_${dealId}_${key}_${Date.now()}.png`);
+    fs.writeFileSync(tempPath, imageBuffer);
+    temporaryFilesToClean.push(tempPath);
+
+    console.log(`⚡ Uploading decoded signature binary to Zoho ZFS vault: ${key}`);
+    const zfsId = await uploadToZohoZFS(tempPath, `${key}.png`, zohoToken);
+    
+    if (zfsId) {
+      // Zoho v8 Image Upload custom layout fields expect an array tracking the uppercase File_Id__s property
+      dealUpdateFields[key] = [
+        {
+          File_Id__s: String(zfsId)
+        }
+      ];
     }
-    // 🎛️ Type-Cast Guardrails: Force absolute clean evaluation format for CRM schemas
-    else if (normalizedValue === "true") {
-      dealUpdateFields[key] = true;
-    } else if (normalizedValue === "false") {
-      dealUpdateFields[key] = false;
-    } else if (value === true || value === false) {
-      dealUpdateFields[key] = value;
-    } else if (typeof value === 'number') {
-  // Already a number from frontend — force integer for specific fields
-  if (key === 'Consumer_Number') {
-    dealUpdateFields[key] = Math.trunc(value);
-  } else {
-    dealUpdateFields[key] = value;
-  }
-} else if (
-  typeof value === 'string' && 
-  value.trim() !== '' && 
-  !isNaN(value) && 
-  !isNaN(parseFloat(value))
-) {
-  if (key === 'Consumer_Number') {
-    dealUpdateFields[key] = Math.trunc(parseInt(value.trim(), 10));
-  } else if (!value.includes('.')) {
-    dealUpdateFields[key] = parseInt(value.trim(), 10);
-  } else {
-    dealUpdateFields[key] = parseFloat(value.trim());
-  }
-} else {
-      dealUpdateFields[key] = value;
-    }
+  } catch (err) {
+    console.error(`⚠️ Failed to process base64 signature layout field configuration for ${key}:`, err.message);
   }
 }
-dealUpdateFields['Consumer_Number'] = parseInt(String(dealUpdateFields['Consumer_Number'] ?? '').trim(), 10) || 0;
+          // 🎛️ Case B: Dynamic Checkbox/Boolean Casting Engine via JSON-Schema Rules
+          else if (fieldDefinition.type === 'boolean') {
+            dealUpdateFields[key] = (
+              value === true ||
+              normalizedValue === 'true' ||
+              normalizedValue === 'yes' ||
+              normalizedValue === 'collected' ||
+              normalizedValue === 'required'
+            );
+          }
+          // 📞 Case C: Phone Sanitizer Check
+          else if (fieldDefinition.pattern || key === 'Mobile' || key === 'Site_Engineer_Contact') {
+            let digitsOnly = String(value).replace(/\D/g, ''); 
+            if (digitsOnly.length === 12 && digitsOnly.startsWith('91')) {
+              digitsOnly = digitsOnly.substring(2);
+            }
+            dealUpdateFields[key] = digitsOnly;
+          }
+          // 🛑 Case D: EXCLUSION FILTER: Keep Latitude/Longitude as pure strings for Zoho Single Line fields
+          else if (key === 'Latitude' || key === 'Longitude') {
+            dealUpdateFields[key] = String(value).trim();
+          }
+          // ⚙️ Case E: Numbers & Integer auto-casting parameters
+          else if (typeof value === 'number') {
+            if (key === 'Consumer_Number') {
+              dealUpdateFields[key] = Math.trunc(value);
+            } else {
+              dealUpdateFields[key] = value;
+            }
+          } else if (
+            typeof value === 'string' && 
+            value.trim() !== '' && 
+            !isNaN(value) && 
+            !isNaN(parseFloat(value))
+          ) {
+            if (key === 'Consumer_Number') {
+              dealUpdateFields[key] = Math.trunc(parseInt(value.trim(), 10));
+            } else if (!value.includes('.')) {
+              dealUpdateFields[key] = parseInt(value.trim(), 10);
+            } else {
+              dealUpdateFields[key] = parseFloat(value.trim());
+            }
+          } else {
+            dealUpdateFields[key] = value;
+          }
+        }
+      }
+      
+      dealUpdateFields['Consumer_Number'] = parseInt(String(dealUpdateFields['Consumer_Number'] ?? '').trim(), 10) || 0;
 
-      console.log(`📡 Streaming initial surveyor fields data live to Zoho Deals Profile: ${dealId}`);
+      console.log(`📡 Streaming integrated surveyor text and image layout live to Zoho Deals profile: ${dealId}`);
 
       const zohoResponse = await fetch(`https://www.zohoapis.in/crm/v8/Deals/${dealId}`, {
         method: "PUT",
@@ -185,7 +246,7 @@ dealUpdateFields['Consumer_Number'] = parseInt(String(dealUpdateFields['Consumer
         if (resJson?.data?.[0]?.status === "error") {
           console.error("❌ Zoho inner tracking rejection parameters:", JSON.stringify(resJson.data[0]));
         } else {
-          console.log(`🚀 Successfully populated initial parameters to Zoho Deal layout.`);
+          console.log(`🚀 Successfully populated text and image components to Zoho Deal layout.`);
         }
       }
 
@@ -199,7 +260,7 @@ dealUpdateFields['Consumer_Number'] = parseInt(String(dealUpdateFields['Consumer
     console.error("❌ Exception inside multipart addForm controller:", err.message);
     return c.json({ error: err.message }, 500);
   } finally {
-    // 3. Disk Space Cleanup Loop
+    // Disk Space Cleanup Loop
     for (const filePath of temporaryFilesToClean) {
       if (fs.existsSync(filePath)) {
         try {

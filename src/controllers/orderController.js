@@ -28,9 +28,9 @@ const getISTDateStrings = () => {
 export const addOrder = async (c) => {
   try {
     const body = await c.req.json();
-    
+
     // 🔍 Extract identifying info for the Zoho entry
-    const mobile = body.mobileNumber || body.mobile || body.Mobile; 
+    const mobile = body.mobileNumber || body.mobile || body.Mobile;
     const customerName = body.customerName || body.firstName || body.First_Name;
 
     // 🛑 Strict Business Rule: Mobile Number is mandatory for Zoho Leads
@@ -83,9 +83,9 @@ export const addOrder = async (c) => {
       const zohoLeadId = statusBlock.details.id;
       console.log(`✅ Record successfully provisioned. Zoho Lead ID: ${zohoLeadId}`);
 
-      return c.json({ 
+      return c.json({
         success: true,
-        message: "Order successfully added and synced with Zoho.", 
+        message: "Order successfully added and synced with Zoho.",
         id: zohoLeadId
       }, 201);
     });
@@ -125,7 +125,7 @@ export const rejectOrder = async (c) => {
         }).toArray();
 
         let adminTokens = [];
-        
+
         admins.forEach((adminUser) => {
           const devices = adminUser.PlatformInfo?.devices;
           if (devices && Array.isArray(devices)) {
@@ -139,17 +139,33 @@ export const rejectOrder = async (c) => {
 
         // 3. Send standard push notification exactly like your assignment style
         if (adminTokens.length > 0) {
-          const message = {
-            notification: {
-              title: "Job Rejected by Surveyor! ⚠️",
-              body: `Surveyor ${surveyorNumber} rejected ${name || 'Customer'}. Reason: ${comment}`,
-            },
-            data: {
-              click_action: "FLUTTER_NOTIFICATION_CLICK",
-              type: "REJECTION"
-            },
-            tokens: adminTokens,
-          };
+         const message = {
+  notification: {
+    title: "Job Rejected by Surveyor! ⚠️",
+    body: `Surveyor ${surveyorNumber} rejected ${name || 'Customer'}. Reason: ${comment}`,
+  },
+  // 🤖 Force High Priority and Channel Mapping for Android Default Sound
+  android: {
+    priority: "high",
+    notification: {
+      channelId: "weekly_summary_channel_v1", // Ties into your high-importance channel
+      sound: "default",
+    }
+  },
+  // 🍏 Standard iOS Default Sound Setup
+  apns: {
+    payload: {
+      aps: {
+        sound: "default"
+      }
+    }
+  },
+  data: {
+    click_action: "FLUTTER_NOTIFICATION_CLICK",
+    type: "REJECTION"
+  },
+  tokens: adminTokens,
+};
 
           const response = await admin.messaging().sendEachForMulticast(message);
           console.log(`🚀 Rejection alert pushed to Admin devices. Success count: ${response.successCount}`);
@@ -159,7 +175,7 @@ export const rejectOrder = async (c) => {
       } catch (pushErr) {
         console.error("⚠️ Non-blocking warning: Failed to send Admin notification:", pushErr.message);
       }
-      
+
       return c.json({ success: true, message: "Order rejection cataloged and Admin notified." });
     });
   } catch (err) {
@@ -171,7 +187,7 @@ export const rejectOrder = async (c) => {
 export const completeOrder = async (c) => {
   try {
     const body = await c.req.json();
-    const { customerMobile, surveyorNumber, receivedAt,name,address } = body;
+    const { customerMobile, surveyorNumber, receivedAt, name, address } = body;
 
     return await withDatabase(MONGODB_URI, async (db) => {
       // Safe local insert maintaining standard auditing schemas exclusively
@@ -185,7 +201,7 @@ export const completeOrder = async (c) => {
 
       await db.collection("admin_complete").insertOne(adminCompletePayload);
       console.log(`✅ Completion tracked locally in admin_complete collection for surveyor: ${surveyorNumber}`);
-      
+
       return c.json({ success: true, message: "Order completion cataloged locally." });
     });
   } catch (err) {
@@ -219,7 +235,7 @@ export const getAdminCompletions = async (c) => {
 export const updateOrder = async (c) => {
   try {
     const body = await c.req.json();
-    
+
     // 🛑 Strict Business Rule: Explicit Zoho 'id' string is mandatory to target the right deal record
     if (!body.id) {
       return c.json({ error: "Validation Error: A specific Zoho 'id' field is required to update an order." }, 400);
@@ -272,7 +288,7 @@ export const updateOrder = async (c) => {
       }
 
       const resJson = await response.json();
-      
+
       // Double check internal action status
       if (resJson?.data?.[0]?.status === "error") {
         console.error("❌ Zoho internal rejection:", JSON.stringify(resJson));
@@ -283,23 +299,23 @@ export const updateOrder = async (c) => {
       // Only proceed with database writing if the master record in Zoho updated successfully.
       if (Object.keys(mongoUpdateFields).length > 0) {
         console.log(`💾 Mirroring data update to local database for Deal ID: ${targetZohoId}`);
-        
+
         await db.collection("forms").updateOne(
           { deal_id: targetZohoId }, // Finds the matching client form based on the linked Zoho Deal ID
-          { 
+          {
             $set: {
               ...mongoUpdateFields,
               updatedAt: new Date() // Appends a tracking timestamp
-            } 
+            }
           },
           { upsert: false } // Change to true if you want to create a form if it somehow doesn't exist
         );
       }
 
-      return c.json({ 
-        success: true, 
-        message: "Targeted Deal profile synchronized cleanly in both Zoho CRM and Database!", 
-        id: targetZohoId 
+      return c.json({
+        success: true,
+        message: "Targeted Deal profile synchronized cleanly in both Zoho CRM and Database!",
+        id: targetZohoId
       });
     });
   } catch (err) {
@@ -327,7 +343,7 @@ export const updateSurveyStatus = async (c) => {
 
     if (normalizedStatus === "scheduled") {
       zohoValue = "Scheduled";
-      localCleanedStatus = "scheduled"; 
+      localCleanedStatus = "scheduled";
     } else if (normalizedStatus === "rejected") {
       zohoValue = "Rejected";
       localCleanedStatus = "rejected";
@@ -338,14 +354,14 @@ export const updateSurveyStatus = async (c) => {
       zohoValue = "Accepted";
       localCleanedStatus = "accepted";
     } else if (normalizedStatus === "inprogress" || normalizedStatus === "in-progress") {
-      zohoValue = "In-Progress"; 
+      zohoValue = "In-Progress";
       localCleanedStatus = "inprogress"; // 🎯 Stripped down version for your frontend filter schema matrix
     }
 
     // Fallback if the requested value doesn't match your system options
     if (!zohoValue) {
-      return c.json({ 
-        error: `Validation Error: '${status}' is not recognized. Must be one of: scheduled, rejected, completed, accepted, inprogress` 
+      return c.json({
+        error: `Validation Error: '${status}' is not recognized. Must be one of: scheduled, rejected, completed, accepted, inprogress`
       }, 400);
     }
 
@@ -358,7 +374,7 @@ export const updateSurveyStatus = async (c) => {
         data: [
           {
             id: String(id),
-            Site_Survey_Status: zohoValue 
+            Site_Survey_Status: zohoValue
           }
         ]
       };
@@ -386,14 +402,14 @@ export const updateSurveyStatus = async (c) => {
 
       // 5. 🔄 UNIFIED STEP: Sync straight to local MongoDB "deals" collection in the same loop
       console.log(`🔄 Syncing local status for Deal [${id}] to matching state: ${localCleanedStatus}`);
-      
+
       const localResult = await db.collection("deals").updateOne(
         { deal_id: String(id) }, // Targets your primary deal ID cross reference string
-        { 
-          $set: { 
+        {
+          $set: {
             siteSurveyStatus: localCleanedStatus,
             updatedAt: new Date().toISOString()
-          } 
+          }
         }
       );
 
@@ -403,8 +419,8 @@ export const updateSurveyStatus = async (c) => {
         console.log(`✅ Successfully shifted status locally for Deal [${id}] to pipeline flag: ${localCleanedStatus}`);
       }
 
-      return c.json({ 
-        success: true, 
+      return c.json({
+        success: true,
         message: `Site Survey Status successfully transitioned to '${zohoValue}' inside both Zoho and local database tracking.`,
         id: id,
         currentLocalStatus: localCleanedStatus
@@ -425,11 +441,11 @@ export const getOrders = async (c) => {
 
       // 🏷️ Requesting all necessary Deal layout parameters from Zoho CRM
       const fieldsParam = "id,Deal_Name,Contact_Name,Mobile,WhatsApp_Number,Email,Stage,Description,Wattage_Required,Created_Time,Site_Survey_Status," +
-                          "Address_City,Address_Street_Address,Address_Coordinates_Latitude,Address_Coordinates_Longitude," +
-                          "City,Street_Address,Latitude,Longitude";
-      
+        "Address_City,Address_Street_Address,Address_Coordinates_Latitude,Address_Coordinates_Longitude," +
+        "City,Street_Address,Latitude,Longitude";
+
       console.log("📡 Admin Dashboard: Fetching active records from Zoho Deals engine...");
-      
+
       const response = await fetch(`https://www.zohoapis.in/crm/v8/Deals?fields=${fieldsParam}&per_page=50`, {
         method: "GET",
         headers: {
@@ -445,32 +461,32 @@ export const getOrders = async (c) => {
       }
 
       const result = await response.json();
-      
+
       // Remap Zoho API Deal fields to clean, standardized JSON keys for your Admin Mobile UI
       const orders = (result.data || []).map(deal => {
         const rawStatus = deal.Site_Survey_Status || "";
         const cleanedSurveyStatus = rawStatus.toLowerCase().replace('-', '').trim();
 
         return {
-          id: deal.id, 
+          id: deal.id,
           name: deal.Deal_Name || (deal.Contact_Name ? deal.Contact_Name.name : "Unknown Customer"),
           mobile: deal.Mobile || null,
           whatsappNo: deal.WhatsApp_Number || null,
           email: deal.Email || null,
-          
+
           // Dual Fallback Mapping logic matching your current CRM setup layouts
           city: deal.Address_City || deal.City || null,
           address: deal.Address_Street_Address || deal.Street_Address || null,
           latitude: deal.Address_Coordinates_Latitude || deal.Latitude || null,
           longitude: deal.Address_Coordinates_Longitude || deal.Longitude || null,
-          
+
           comment: deal.Description || "",
-          status: deal.Stage?.toLowerCase() || "unaccepted", 
+          status: deal.Stage?.toLowerCase() || "unaccepted",
           siteSurveyStatus: cleanedSurveyStatus || "accepted",
           kilovolt: deal.Wattage_Required || null,
-          
+
           // Extract the profile creation timestamp cleanly
-          date: deal.Created_Time || null 
+          date: deal.Created_Time || null
         };
       });
 
@@ -481,13 +497,11 @@ export const getOrders = async (c) => {
     return c.json({ error: "Internal server error" }, 500);
   }
 };
-/**
- * 🗑️ Delete Order (Searches Zoho CRM by mobile number field key and deletes the record)
- */
+
 export const deleteOrder = async (c) => {
   try {
     const body = await c.req.json();
-    
+
     // 🛑 Strict Business Rule: Explicit Zoho 'id' string is mandatory to target the precise deal
     if (!body.id) {
       return c.json({ error: "Validation Error: A specific Zoho 'id' field is required to delete an order." }, 400);
@@ -504,8 +518,8 @@ export const deleteOrder = async (c) => {
       // 1. Send the HTTP DELETE request straight to Zoho's explicit DEALS endpoint
       const response = await fetch(`https://www.zohoapis.in/crm/v8/Deals/${targetZohoId}`, {
         method: "DELETE",
-        headers: { 
-          "Authorization": `Zoho-oauthtoken ${zohoToken}` 
+        headers: {
+          "Authorization": `Zoho-oauthtoken ${zohoToken}`
         }
       });
 
@@ -519,15 +533,15 @@ export const deleteOrder = async (c) => {
 
       // 2. 🧹 LOCAL CLEANUP: Also remove the assignment tracking record from your local MongoDB
       const dbCleanup = await db.collection("deals").deleteOne({ deal_id: targetZohoId });
-      
+
       if (dbCleanup.deletedCount > 0) {
         console.log(`🧹 Local DB Cleanup: Removed deal ${targetZohoId} from local 'deals' collection.`);
       } else {
         console.log(`ℹ️ Local DB Cleanup: No local assignment document found for deal ${targetZohoId}.`);
       }
-      
-      return c.json({ 
-        success: true, 
+
+      return c.json({
+        success: true,
         message: "Deal record deleted successfully from Zoho CRM and local tracking.",
         id: targetZohoId
       }, 200);
@@ -541,7 +555,7 @@ export const deleteOrder = async (c) => {
 export const handleZohoDealWebhook = async (c) => {
   try {
     let payload = {};
-    
+
     // 1. Grab any URL query string parameters (e.g., ?deal_id=123)
     const queryParams = c.req.query();
     if (Object.keys(queryParams).length > 0) {
@@ -550,7 +564,7 @@ export const handleZohoDealWebhook = async (c) => {
 
     // 2. Read the raw text body to handle direct streams safely
     const rawText = await c.req.text();
-    
+
     if (rawText && rawText.trim().length > 0) {
       try {
         // Check if it's a pure JSON string
@@ -563,9 +577,10 @@ export const handleZohoDealWebhook = async (c) => {
         payload = { ...payload, ...formObj };
       }
     }
+
     // Execute database operations safely using your wrapper
     return await withDatabase(MONGODB_URI, async (db) => {
-      
+
       // 1. Query for all users whose role is admin
       const admins = await db.collection("userDetails")
         .find({ "UserInfo.role": "admin" })
@@ -577,7 +592,7 @@ export const handleZohoDealWebhook = async (c) => {
       let fcmTokens = [];
       admins.forEach((adminUser, idx) => {
         console.log(`👤 Processing Admin [${idx}]: Phone: ${adminUser.UserInfo?.phoneNo || "N/A"}`);
-        
+
         const devices = adminUser.PlatformInfo?.devices;
         if (devices && Array.isArray(devices)) {
           console.log(`📱 Found ${devices.length} devices mapped for this admin.`);
@@ -596,16 +611,32 @@ export const handleZohoDealWebhook = async (c) => {
 
       // 3. Fire notifications if any admin devices were tracked down
       if (fcmTokens.length > 0) {
-        const message = {
-          notification: {
-            title: "New Deal Created! 🚀",
-            body: `Deal: ${payload.deal_name || "New Opportunity"} is now in ${payload.stage || "Qualification"}.`,
-          },
-          data: {
-            deal_id: payload.deal_id || "",
-          },
-          tokens: fcmTokens,
-        };
+       const message = {
+  notification: {
+    title: "New Deal Created! 🚀",
+    body: `Deal: ${payload.deal_name || "New Opportunity"} is now in ${payload.stage || "Qualification"}.`,
+  },
+  // 🤖 Force High Priority and Channel Mapping for Android Default Sound
+  android: {
+    priority: "high",
+    notification: {
+      channelId: "weekly_summary_channel_v1", // 👈 Tells Android to use your high-importance channel rules
+      sound: "default",
+    }
+  },
+  // 🍏 Standard iOS Default Sound Setup
+  apns: {
+    payload: {
+      aps: {
+        sound: "default"
+      }
+    }
+  },
+  data: {
+    deal_id: payload.deal_id || "",
+  },
+  tokens: fcmTokens,
+};
 
         const response = await admin.messaging().sendEachForMulticast(message);
         console.log(`✅ Push notifications dispatched successfully to ${response.successCount} admin devices.`);
@@ -626,11 +657,10 @@ export const handleZohoDealWebhook = async (c) => {
 export const assignDealToSurveyor = async (c) => {
   try {
     const body = await c.req.json();
-    
-    // Extract everything matching your clean getOrders/Deals layout mapping
-    const { 
-      id, // This is your deal_id from Zoho
-      name, // This is the Deal_Name / Contact_Name
+
+    const {
+      id,
+      name,
       mobile,
       whatsappNo,
       email,
@@ -642,7 +672,7 @@ export const assignDealToSurveyor = async (c) => {
       status,
       kilovolt,
       date,
-      surveyorNumber // The phone number the admin picked
+      surveyorNumber
     } = body;
 
     if (!id || !surveyorNumber) {
@@ -650,8 +680,7 @@ export const assignDealToSurveyor = async (c) => {
     }
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      
-      // 1. Pack the complete matching layout structure to save into your local DB
+
       const fullDealPayload = {
         deal_id: id,
         deal_name: name || "New Site Opportunity",
@@ -664,14 +693,13 @@ export const assignDealToSurveyor = async (c) => {
         longitude: longitude || null,
         comment: comment || "",
         status: status || "unaccepted",
-        siteSurveyStatus:"notassigned",
+        siteSurveyStatus: "notassigned",
         kilovolt: kilovolt || null,
         date: date || null,
         assignedTo: surveyorNumber,
         assignedAt: new Date().toISOString(),
       };
 
-      // Update or insert the full document layout into your local database
       await db.collection("deals").updateOne(
         { deal_id: id },
         { $set: fullDealPayload },
@@ -680,7 +708,6 @@ export const assignDealToSurveyor = async (c) => {
 
       console.log(`🎯 Complete Deal payload for [${id}] successfully mapped to surveyor: ${surveyorNumber}`);
 
-      // 2. Look up the specific surveyor's profile to get their FCM tokens
       const surveyorProfile = await db.collection("userDetails").findOne({
         "UserInfo.phoneNo": surveyorNumber,
         "UserInfo.role": "surveyor"
@@ -691,7 +718,6 @@ export const assignDealToSurveyor = async (c) => {
         return c.json({ success: true, message: "Deal assigned locally, but surveyor profile missing." }, 200);
       }
 
-      // 3. Extract tokens from the surveyor's devices array
       let surveyorTokens = [];
       const devices = surveyorProfile.PlatformInfo?.devices;
       if (devices && Array.isArray(devices)) {
@@ -702,17 +728,51 @@ export const assignDealToSurveyor = async (c) => {
         });
       }
 
-      // 4. Send targeted push notification to this specific surveyor
       if (surveyorTokens.length > 0) {
+        
+        // 📋 1. Format the body text line-by-line using template literals to match image exactly
+        const structuredBody = `👤 Name : ${name || 'N/A'}\n📍 Address : ${address || 'N/A'}\n⚡ Kilovolts : ${kilovolt || 'N/A'}`;
+
         const message = {
           notification: {
-            title: "New Job Assigned! 📋",
-            body: `You have been assigned to site survey: ${fullDealPayload.deal_name}.`,
+            title: "🔔 New Lead Nearby!",
+            body: structuredBody,
+          },
+          // 🤖 Android Configuration with Custom Sound and Interactive Action Buttons
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "custom_sound_channel_v2",
+              sound: "kondaas",
+              // 🔘 Adds interactive actions directly under the notification banner
+              actions: [
+                {
+                  action: "ACCEPT_ACTION",
+                  title: "✅ ACCEPT"
+                },
+                {
+                  action: "REJECT_ACTION",
+                  title: "❌ REJECT"
+                }
+              ]
+            }
+          },
+          // 🍏 iOS Sound Payload Setup
+          apns: {
+            payload: {
+              aps: {
+                sound: "kondaas.caf",
+                category: "SURVEYOR_ASSIGNMENT_CATEGORY" // 👈 iOS requires registering a category in frontend for buttons
+              }
+            }
           },
           data: {
             deal_id: id,
             click_action: "FLUTTER_NOTIFICATION_CLICK",
-            type: "ASSIGNMENT"
+            type: "ASSIGNMENT",
+            customer_name: name || "",
+            customer_address: address || "",
+            kilovolt: String(kilovolt || "")
           },
           tokens: surveyorTokens,
         };
@@ -732,33 +792,24 @@ export const assignDealToSurveyor = async (c) => {
   }
 };
 
-
 export const zohoWorkflowAssignment = async (c) => {
   try {
-    // 1. Gather any query strings and extract the raw body string
     const urlQueries = c.req.query() || {};
     let rawText = "";
-    
+
     try {
       rawText = await c.req.text();
-    } catch (e) {
-      // Stream unreadable or empty payload
-    }
+    } catch (e) { }
 
-    // 2. Parse the text stream directly into form fields
     let bodyParams = {};
     if (rawText && rawText.trim().length > 0) {
       try {
         bodyParams = Object.fromEntries(new URLSearchParams(rawText.trim()));
-      } catch (e) {
-        // Fallback for exceptional string configurations
-      }
+      } catch (e) { }
     }
 
-    // 3. Merge query strings and form parameters into a single dataset
     const payload = { ...bodyParams, ...urlQueries };
-    
-    // 4. Map incoming fields to clean local variables
+
     const id = payload.deal_id || payload.id;
     const name = payload.deal_name || payload.name;
     const mobile = payload.mobile || payload.customer_mobile || null;
@@ -772,22 +823,20 @@ export const zohoWorkflowAssignment = async (c) => {
     const status = payload.status || "unaccepted";
     const kilovolt = payload.kilovolt || null;
     const date = payload.date || null;
-    
+
     const siteEngineerContact = payload.site_engineer_contact || payload.Site_Engineer_Contact;
 
     if (!id || !siteEngineerContact) {
       return c.json({ error: "Missing required fields: id or site_engineer_contact from Zoho payload" }, 400);
     }
 
-    // 🧼 Sanitize and normalize phone formatting down to standard digits
-    let surveyorNumber = String(siteEngineerContact).replace(/\D/g, ''); 
+    let surveyorNumber = String(siteEngineerContact).replace(/\D/g, '');
     if (surveyorNumber.length === 12 && surveyorNumber.startsWith('91')) {
       surveyorNumber = surveyorNumber.substring(2);
     }
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      
-      // 🧱 Step 1: Shape the core document structure for local storage
+
       const fullDealPayload = {
         deal_id: id,
         deal_name: name || "New Site Opportunity",
@@ -807,7 +856,6 @@ export const zohoWorkflowAssignment = async (c) => {
         assignedAt: new Date().toISOString(),
       };
 
-      // Atomic update-insert operation inside local database
       await db.collection("deals").updateOne(
         { deal_id: id },
         { $set: fullDealPayload },
@@ -816,7 +864,6 @@ export const zohoWorkflowAssignment = async (c) => {
 
       console.log(`🎯 Zoho Assignment Sync -> Deal: ${id} mapped to Surveyor: ${surveyorNumber}`);
 
-      // 🔍 Step 2: Fetch the assigned surveyor's user details
       const surveyorProfile = await db.collection("userDetails").findOne({
         "UserInfo.phoneNo": surveyorNumber,
         "UserInfo.role": "surveyor"
@@ -824,10 +871,9 @@ export const zohoWorkflowAssignment = async (c) => {
 
       if (!surveyorProfile) {
         console.log(`⚠️ Surveyor profile missing from database for number: ${surveyorNumber}`);
-        return c.json({ success: true, message: "Deal assigned locally, but surveyor profile missing." }, 200);
+        return c.json({ success: true, message: "Deal assignment locally, but surveyor profile missing." }, 200);
       }
 
-      // 📱 Step 3: Extract valid FCM device registry tokens
       let surveyorTokens = [];
       const devices = surveyorProfile.PlatformInfo?.devices;
       if (devices && Array.isArray(devices)) {
@@ -838,17 +884,51 @@ export const zohoWorkflowAssignment = async (c) => {
         });
       }
 
-      // 🚀 Step 4: Dispatch targeted push alerts via Firebase Multicast
       if (surveyorTokens.length > 0) {
+        
+        // 📋 Line-by-line format layout matching the interactive view exactly
+        const structuredBody = `👤 Name : ${name || 'N/A'}\n📍 Address : ${address || 'N/A'}\n⚡ Kilovolts : ${kilovolt || 'N/A'}`;
+
         const message = {
           notification: {
-            title: "New Job Assigned! 📋",
-            body: `You have been assigned to site survey: ${fullDealPayload.deal_name}.`,
+            title: "🔔 New Lead Nearby!",
+            body: structuredBody,
+          },
+          // 🤖 Android System Configurations
+          android: {
+            priority: "high",
+            notification: {
+              channelId: "custom_sound_channel_v2",
+              sound: "kondaas",
+              // 🔘 Adds the native interactive buttons below the alert body
+              actions: [
+                {
+                  action: "ACCEPT_ACTION",
+                  title: "✅ ACCEPT"
+                },
+                {
+                  action: "REJECT_ACTION",
+                  title: "❌ REJECT"
+                }
+              ]
+            }
+          },
+          // 🍏 iOS System Sound Category Setup
+          apns: {
+            payload: {
+              aps: {
+                sound: "kondaas.caf",
+                category: "SURVEYOR_ASSIGNMENT_CATEGORY"
+              }
+            }
           },
           data: {
             deal_id: id,
             click_action: "FLUTTER_NOTIFICATION_CLICK",
-            type: "ASSIGNMENT"
+            type: "ASSIGNMENT",
+            customer_name: name || "",
+            customer_address: address || "",
+            kilovolt: String(kilovolt || "")
           },
           tokens: surveyorTokens,
         };
@@ -879,7 +959,7 @@ export const getSurveyorDeals = async (c) => {
     }
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      
+
       // Query the deals collection looking strictly for matches against their phone number
       const assignedDeals = await db.collection("deals")
         .find({ assignedTo: surveyorNumber })
