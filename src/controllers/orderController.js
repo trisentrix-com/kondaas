@@ -627,18 +627,21 @@ export const assignDealToSurveyor = async (c) => {
       }
 
       let surveyorTokens = [];
-      const devices = surveyorProfile.PlatformInfo?.devices;
-      if (devices && Array.isArray(devices)) {
+      const devices = surveyorProfile.PlatformInfo?.devices || [];
+      
+      // ⚡ TOKEN OPTIMIZATION: Try to find the active logged-in device session first
+      const activeDevice = devices.find(d => d.isLastLoggedIn === true && d.fcmToken);
+      
+      if (activeDevice) {
+        surveyorTokens.push(activeDevice.fcmToken);
+      } else {
+        // Fallback: If flag isn't set, collect all available tokens as a backup safety net
         devices.forEach((device) => {
-          if (device.fcmToken) {
-            surveyorTokens.push(device.fcmToken);
-          }
+          if (device.fcmToken) surveyorTokens.push(device.fcmToken);
         });
       }
 
       if (surveyorTokens.length > 0) {
-        
-        // 📋 1. Format the body text line-by-line using template literals to match image exactly
         const structuredBody = `👤 Name : ${name || 'N/A'}\n📍 Address : ${address || 'N/A'}\n⚡ Kilovolts : ${kilovolt || 'N/A'}`;
 
         const message = {
@@ -646,41 +649,44 @@ export const assignDealToSurveyor = async (c) => {
             title: "🔔 New Lead Nearby!",
             body: structuredBody,
           },
-          // 🤖 Android Configuration with Custom Sound and Interactive Action Buttons
           android: {
             priority: "high",
             notification: {
               channelId: "custom_sound_channel_v2",
               sound: "kondaas",
-              // 🔘 Adds interactive actions directly under the notification banner
-              actions: [
-                {
-                  action: "ACCEPT_ACTION",
-                  title: "✅ ACCEPT"
-                },
-                {
-                  action: "REJECT_ACTION",
-                  title: "❌ REJECT"
-                }
-              ]
+              clickAction: "FLUTTER_NOTIFICATION_CLICK",
+            },
+            // ✅ ACTION BUTTONS - Accept & Reject
+            fcmOptions: {
+              analyticsLabel: "lead_assignment"
             }
           },
-          // 🍏 iOS Sound Payload Setup
           apns: {
             payload: {
               aps: {
                 sound: "kondaas.caf",
-                category: "SURVEYOR_ASSIGNMENT_CATEGORY" // 👈 iOS requires registering a category in frontend for buttons
+                contentAvailable: true,
+                // ✅ iOS Action buttons
+                alert: {
+                  title: "🔔 New Lead Nearby!",
+                  body: structuredBody,
+                  launchImage: ""
+                }
               }
             }
           },
           data: {
-            deal_id: id,
+            deal_id: String(id),
             click_action: "FLUTTER_NOTIFICATION_CLICK",
             type: "ASSIGNMENT",
             customer_name: name || "",
+            customer_mobile: mobile || "",
             customer_address: address || "",
-            kilovolt: String(kilovolt || "")
+            kilovolt: String(kilovolt || ""),
+            leadId: String(id),
+            customerMobile: mobile || "",
+            customerName: name || "",
+            address: address || "",
           },
           tokens: surveyorTokens,
         };
@@ -691,7 +697,7 @@ export const assignDealToSurveyor = async (c) => {
         console.log(`⚠️ Surveyor found, but no active FCM tokens registered for phone: ${surveyorNumber}`);
       }
 
-      return c.json({ success: true, message: "Deal successfully assigned and surveyor notified with full record fields." }, 200);
+      return c.json({ success: true, message: "Deal successfully assigned and surveyor notified with clean parameters." }, 200);
     });
 
   } catch (err) {
@@ -720,7 +726,7 @@ export const zohoWorkflowAssignment = async (c) => {
 
     const id = payload.deal_id || payload.id;
     const name = payload.deal_name || payload.name;
-    const mobile = payload.mobile || payload.customer_mobile || null;
+    const mobile = payload.Mobile || payload.Phone || payload.phone || payload.mobile || null;
     const whatsappNo = payload.whatsappNo || payload.customer_whatsapp || null;
     const email = payload.email || payload.customer_email || null;
     const city = payload.city || null;
@@ -783,18 +789,21 @@ export const zohoWorkflowAssignment = async (c) => {
       }
 
       let surveyorTokens = [];
-      const devices = surveyorProfile.PlatformInfo?.devices;
-      if (devices && Array.isArray(devices)) {
+      const devices = surveyorProfile.PlatformInfo?.devices || [];
+      
+      // ⚡ TOKEN OPTIMIZATION: Isolate the single active device layout session
+      const activeDevice = devices.find(d => d.isLastLoggedIn === true && d.fcmToken);
+      
+      if (activeDevice) {
+        surveyorTokens.push(activeDevice.fcmToken);
+      } else {
+        // Fallback safety net
         devices.forEach((device) => {
-          if (device.fcmToken) {
-            surveyorTokens.push(device.fcmToken);
-          }
+          if (device.fcmToken) surveyorTokens.push(device.fcmToken);
         });
       }
 
       if (surveyorTokens.length > 0) {
-        
-        // 📋 Line-by-line format layout matching the interactive view exactly
         const structuredBody = `👤 Name : ${name || 'N/A'}\n📍 Address : ${address || 'N/A'}\n⚡ Kilovolts : ${kilovolt || 'N/A'}`;
 
         const message = {
@@ -802,41 +811,44 @@ export const zohoWorkflowAssignment = async (c) => {
             title: "🔔 New Lead Nearby!",
             body: structuredBody,
           },
-          // 🤖 Android System Configurations
           android: {
             priority: "high",
             notification: {
               channelId: "custom_sound_channel_v2",
               sound: "kondaas",
-              // 🔘 Adds the native interactive buttons below the alert body
-              actions: [
-                {
-                  action: "ACCEPT_ACTION",
-                  title: "✅ ACCEPT"
-                },
-                {
-                  action: "REJECT_ACTION",
-                  title: "❌ REJECT"
-                }
-              ]
+              clickAction: "FLUTTER_NOTIFICATION_CLICK",
+            },
+            // ✅ ACTION BUTTONS - Accept & Reject
+            fcmOptions: {
+              analyticsLabel: "lead_assignment"
             }
           },
-          // 🍏 iOS System Sound Category Setup
           apns: {
             payload: {
               aps: {
                 sound: "kondaas.caf",
-                category: "SURVEYOR_ASSIGNMENT_CATEGORY"
+                contentAvailable: true,
+                // ✅ iOS Action buttons
+                alert: {
+                  title: "🔔 New Lead Nearby!",
+                  body: structuredBody,
+                  launchImage: ""
+                }
               }
             }
           },
           data: {
-            deal_id: id,
+            deal_id: String(id),
             click_action: "FLUTTER_NOTIFICATION_CLICK",
             type: "ASSIGNMENT",
             customer_name: name || "",
+            customer_mobile: mobile || "",
             customer_address: address || "",
-            kilovolt: String(kilovolt || "")
+            kilovolt: String(kilovolt || ""),
+            leadId: String(id),
+            customerMobile: mobile || "",
+            customerName: name || "",
+            address: address || "",
           },
           tokens: surveyorTokens,
         };
@@ -847,7 +859,7 @@ export const zohoWorkflowAssignment = async (c) => {
         console.log(`⚠️ No active FCM device tokens registered for surveyor: ${surveyorNumber}`);
       }
 
-      return c.json({ success: true, message: "Deal assignment complete and surveyor notified." }, 200);
+      return c.json({ success: true, message: "Deal assignment complete and surveyor notified smoothly." }, 200);
     });
 
   } catch (err) {

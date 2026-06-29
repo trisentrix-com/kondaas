@@ -27,7 +27,7 @@ const processWhatsAppNotification = async (notificationId) => {
       // contentString contains the Cloud URL for PDFs
       const contentString = notification.content.buffer.toString('utf8');
 
-      let action = (type === "text") ? "sendText/kondaas" : "sendMedia/kondaas";
+      let action = (type === "text") ? "sendText/petchi" : "sendMedia/petchi";
       let payload = { number: formattedNumber };
 
       if (type === "text") {

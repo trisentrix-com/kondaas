@@ -58,10 +58,15 @@ export const startQueueRunner = () => {
   }, 30000);
 };
 
-const processAllCustomersWeeklyJobs = async (db, masterJob) => {
+export const processAllCustomersWeeklyJobs = async (db, masterJob) => {
   try {
-    const users = await db.collection("userDetails").find({ "PlatformInfo.devices.0": { $exists: true } }).toArray();
-    console.log(`📋 Found ${users.length} users with registered devices in local userDetails collection.`);
+    // ⚡ FIX: Added "UserInfo.role": "user" to isolate customer devices exclusively
+    const users = await db.collection("userDetails").find({ 
+      "UserInfo.role": "user",
+      "PlatformInfo.devices.0": { $exists: true } 
+    }).toArray();
+    
+    console.log(`📋 Found ${users.length} customer users with registered devices in local userDetails collection.`);
 
     const today = new Date();
     const currentDay = today.getDay();
@@ -192,10 +197,15 @@ const processAllCustomersWeeklyJobs = async (db, masterJob) => {
   }
 };
 
-const processAllCustomersMonthlyJobs = async (db, masterJob) => {
+export const processAllCustomersMonthlyJobs = async (db, masterJob) => {
   try {
-    const users = await db.collection("userDetails").find({ "PlatformInfo.devices.0": { $exists: true } }).toArray();
-    console.log(`📋 Found ${users.length} users with registered devices in local userDetails collection.`);
+    // ⚡ FIX: Added "UserInfo.role": "user" to isolate customer devices exclusively
+    const users = await db.collection("userDetails").find({ 
+      "UserInfo.role": "user",
+      "PlatformInfo.devices.0": { $exists: true } 
+    }).toArray();
+    
+    console.log(`📋 Found ${users.length} customer users with registered devices in local userDetails collection.`);
 
     const today = new Date();
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -237,7 +247,7 @@ const processAllCustomersMonthlyJobs = async (db, masterJob) => {
                 stationUnits += Number(item.generationValue);
               }
             }); 
-          }                                  
+          }                                   
 
           totalUserMonthlyUnits += stationUnits;
           processedStationsCount++;
