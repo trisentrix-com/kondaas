@@ -126,31 +126,34 @@ export const getCurrentLocation = async (c) => {
 };
 
 
-export const getLogisticProducts = async (c) => {
+export const getInstallerDealsByMobile = async (c) => {
   try {
-    console.log("📡 Fetching comprehensive list of kondaas-products from Atlas matrix...");
+    // 1. Grab the mobile number from the query string parameters (e.g., ?mobile=6666666666)
+    const mobile = c.req.query("mobile");
+
+    if (!mobile) {
+      return c.json({ success: false, error: "Missing mobile query parameter" }, 400);
+    }
 
     return await withDatabase(MONGODB_URI, async (db) => {
-      // 1. Target the specific kondaas-products collection
-      const products = await db.collection("kondaas-products")
-        .find({})
+      // 2. Fetch all assignments matching this mobile number
+      const deals = await db
+        .collection("Installer_deals")
+        .find({ mobile: mobile })
+        .sort({ assignedAt: -1 }) // ✨ Newest runs appear at the top of their screen
         .toArray();
 
-      // 2. Return the data payload with a success status
+      // 3. Return the array to populate the app's list view
       return c.json({
         success: true,
-        count: products.length,
-        data: products
+        count: deals.length,
+        data: deals
       }, 200);
     });
 
   } catch (err) {
-    console.error("❌ Exception inside getLogisticProducts controller:", err.message);
-    return c.json({ 
-      success: false, 
-      error: "Internal server error fetching logistics inventory catalog",
-      details: err.message 
-    }, 500);
+    console.error("❌ Fetching Logistics Deals Exception:", err.message);
+    return c.json({ success: false, error: "Failed to retrieve logistics assignments" }, 500);
   }
 };
 

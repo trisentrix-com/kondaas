@@ -727,6 +727,7 @@ export const zohoWorkflowAssignment = async (c) => {
     const whatsappNo = payload.whatsappNo || payload.customer_whatsapp || null;
     const email = payload.Email || payload.customer_email || null;
     const city = payload.city || null;
+    const state=payload.state || null;
     const address = payload.address || null;
     const latitude = payload.latitude || null;
     const longitude = payload.longitude || null;
