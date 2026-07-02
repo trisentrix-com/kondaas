@@ -762,6 +762,8 @@ export const zohoWorkflowAssignment = async (c) => {
         latitude: latitude,
         longitude: longitude,
         comment: comment,
+        referred_by:referred_by,
+        Site_Survey_Req_Date_Time: Site_Survey_Req_Date_Time,
         status: status,
         siteSurveyStatus: "notassigned",
         kilovolt: kilovolt,

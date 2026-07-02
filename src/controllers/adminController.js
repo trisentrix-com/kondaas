@@ -327,4 +327,68 @@ export const getInstallerCompletions = async (c) => {
   }
 };
 
+export const whitelistUser = async (c) => {
+  try {
+    const body = await c.req.json();
+    const { mobileNumber, role } = body;
 
+    if (!mobileNumber || !role) {
+      return c.json({
+        success: false,
+        message: "Missing parameters. Both mobileNumber and role are mandatory fields."
+      }, 400);
+    }
+
+    const cleanMobile = String(mobileNumber).trim();
+    const cleanRole = String(role).trim().toLowerCase();
+
+    return await withDatabase(MONGODB_URI, async (db) => {
+      const userCollection = db.collection("userdetails");
+
+      // Check for an existing document using the phone number string as the primary key (_id)
+      const existingUser = await userCollection.findOne({ _id: cleanMobile });
+
+      if (existingUser) {
+        return c.json({
+          success: false,
+          message: `User profile already exists for ${cleanMobile} under the role: ${existingUser.UserInfo?.role || 'unknown'}`
+        }, 409);
+      }
+
+      // 🎯 Build the exact nested schema matching your production sample record
+      const whitelistedUserProfile = {
+        _id: cleanMobile, // Your pattern stores the phone number directly as the unique identifier string
+        AppInfo: {
+          lastLogin: null
+        },
+        PlatformInfo: {
+          devices: [] // Array shell waiting for saveuserdetails to push into during later logins
+        },
+        UserInfo: {
+          phoneNo: cleanMobile,
+          role: cleanRole,
+          email: "",
+          password: ""
+        },
+        updatedAt: new Date()
+      };
+
+      await userCollection.insertOne(whitelistedUserProfile);
+
+      console.log(`👤 [Admin Success] Whitelisted profile shell created for _id: ${cleanMobile} [Role: ${cleanRole}]`);
+
+      return c.json({
+        success: true,
+        message: "User pre-authorized in database seamlessly. Ready for device deployment log-in verification."
+      }, 201);
+    });
+
+  } catch (error) {
+    console.error("❌ Exception inside whitelistUser pipeline:", error.message);
+    return c.json({
+      success: false,
+      message: "Internal configuration failure processing profile pre-authorization.",
+      error: error.message
+    }, 500);
+  }
+};

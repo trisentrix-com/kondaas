@@ -288,6 +288,7 @@ const findExistingLeadsFolder = async (folderName, parentFolderId, accessToken) 
 
 
 export const getOrCreateLeadsSEFolder = async (dealId, subfolderType, state) => {
+  // 🎯 Dynamic State Switch Logic
   const isKerala = state && String(state).trim().toLowerCase() === "kerala";
   const SELECTED_ROOT_ID = isKerala ? ZOHO_ROOT_KERALA : ZOHO_ROOT_TAMILNADU;
   const regionPrefix = isKerala ? "kerala" : "tn";
@@ -310,6 +311,16 @@ export const getOrCreateLeadsSEFolder = async (dealId, subfolderType, state) => 
 
     console.log(`📝 Cache Miss! Path [${fullSubfolderPathKey}] not cached. Verifying live folder structure...`);
     const zAccessToken = await getZohoAccessToken(db);
+
+    // =========================================================================
+    // 🔍 LIVE DEBUGGING FOOTPRINT PRINT ENGINE
+    // =========================================================================
+    console.log("-----------------------------------------");
+    console.log(`📡 [DEBUG] Target State Context : ${regionPrefix.toUpperCase()}`);
+    console.log(`📡 [DEBUG] Selected Root ID     : ${SELECTED_ROOT_ID}`);
+    console.log(`📡 [DEBUG] Active OAuth Token    : ${zAccessToken ? `${zAccessToken.substring(0, 15)}... (Truncated)` : "MISSING ❌"}`);
+    console.log("-----------------------------------------");
+    // =========================================================================
 
     let dealFolderId;
     const cachedDealFolder = await cacheCollection.findOne({ type: "leads_se_deal", path: dealPathKey });
@@ -341,9 +352,13 @@ export const getOrCreateLeadsSEFolder = async (dealId, subfolderType, state) => 
 
           dealFolderId = dealRes.data?.data?.id || dealRes.data?.data?.attributes?.id;
         } catch (err) {
-          if (err.isAxiosError && err.response) {
-            console.error("❌ Zoho API Refused Regional Deal Folder Creation!");
-            console.error("🔹 Details:", JSON.stringify(err.response.data, null, 2));
+          console.error("❌ Zoho API Refused Regional Deal Folder Creation!");
+          if (err.response) {
+            // 🔥 Deep inspection of error payload
+            console.error("🔹 HTTP Status Code:", err.response.status);
+            console.error("🔹 Zoho API Raw Payload Details:", JSON.stringify(err.response.data, null, 2));
+          } else {
+            console.error("🔹 System Error Message:", err.message);
           }
           throw err;
         }
@@ -382,9 +397,13 @@ export const getOrCreateLeadsSEFolder = async (dealId, subfolderType, state) => 
 
         subfolderFolderId = subfolderRes.data?.data?.id || subfolderRes.data?.data?.attributes?.id;
       } catch (err) {
-        if (err.isAxiosError && err.response) {
-          console.error(`❌ Zoho API Refused Subfolder [${subfolderType}] Creation!`);
-          console.error("🔹 Details:", JSON.stringify(err.response.data, null, 2));
+        console.error(`❌ Zoho API Refused Subfolder [${subfolderType}] Creation!`);
+        if (err.response) {
+          // 🔥 Deep inspection of error payload
+          console.error("🔹 HTTP Status Code:", err.response.status);
+          console.error("🔹 Zoho API Raw Payload Details:", JSON.stringify(err.response.data, null, 2));
+        } else {
+          console.error("🔹 System Error Message:", err.message);
         }
         throw err;
       }
