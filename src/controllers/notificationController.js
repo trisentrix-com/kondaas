@@ -1,7 +1,7 @@
 import { withDatabase, Binary, ObjectId, getSystemKeys } from '../utils/config.js';
 import { generatePDF } from '../utils/pdfGenerator.js';
 import { getZohoAccessToken } from '../utils/zohoAuth.js';
-import { uploadToZohoWorkDrive, uploadSurveyorAttendancePhoto, getOrCreateLeadsSEFolder } from '../utils/uploadToZohoWorkDrive.js';
+import { uploadToZohoWorkDrive, uploadSurveyorAttendancePhoto, getOrCreateLeadsSEFolder,createZohoPublicDownloadUrl } from '../utils/uploadToZohoWorkDrive.js';
 import { getInvoiceTemplate, getSurveyReportTemplate } from '../templates/invoiceTemplate.js';
 import path from 'path';
 import fs from 'fs';

@@ -35,6 +35,7 @@ const uploadToZohoZFS = async (localFilePath, fileName, zohoToken) => {
   }
 };
 
+
 export const addForm = async (c) => {
   const temporaryFilesToClean = [];
 
@@ -49,63 +50,63 @@ export const addForm = async (c) => {
       return c.json({ error: "Mobile number is required!" }, 400);
     }
 
-    const dealId = dataFields.deal_id || dataFields.id || dataFields.deal_id;
+    const dealId = dataFields.deal_id || dataFields.id;
     if (!dealId) {
       return c.json({ error: "Validation Error: An explicit 'deal_id' is required to register this form structure." }, 400);
     }
 
-    // Isolate both photo category arrays out of the incoming multipart body
-    const rawEbPhotos = body.ebBillPhotos;
-    const ebFiles = Array.isArray(rawEbPhotos) ? rawEbPhotos : (rawEbPhotos ? [rawEbPhotos] : []);
-
-    const rawSitePhotos = body.sitePhotos; 
-    const siteFiles = Array.isArray(rawSitePhotos) ? rawSitePhotos : (rawSitePhotos ? [rawSitePhotos] : []);
-
     const uploadDir = path.join(process.cwd(), 'uploads');
     if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-    // -------------------------------------------------------------------------
-    // PROCESS CATEGORY 1: last 6 month EBbill
-    // -------------------------------------------------------------------------
-    const uploadedEbUrls = [];
-    if (ebFiles.length > 0) {
-      const targetEbFolderId = await getOrCreateLeadsSEFolder(dealId, "last 6 month EBbill");
+    // 🎯 Define your clean explicit field-names map array list
+    const targetFileFields = [
+      "Site_Survey_Photos", "North_to_South_View_Photo", "South_to_North_View_Photo",
+      "East_to_West_View_Photo", "West_to_East_View_Photos", "Panel_Mounting_Location_Photo",
+      "Geo_Tagged_Roof_Photo", "Building_Full_View_Photo", "KSEB_Meter_Photo",
+      "Earthing_Location_Photo", "Inverter_DB_Fixing_Location_Photo", "Roof_Videos",
+      "Roof_Surround_Videos", "Advance_Payment_Screenshot", "Aadhar_Card",
+      "Pan_Card", "Passport_Size_Photo", "Bank_Passbook_Copy", "EB_Bill_Copy"
+    ];
 
-      for (let i = 0; i < ebFiles.length; i++) {
-        const file = ebFiles[i];
+    const uploadedFileUrls = {};
+
+    // -------------------------------------------------------------------------
+    // DYNAMIC FILE LOOP PROCESSOR: Handle photos & videos via field-level isolation
+    // -------------------------------------------------------------------------
+    for (const fieldName of targetFileFields) {
+      const rawFile = body[fieldName];
+      if (!rawFile) continue; // Skip fields not sent in this specific request payload
+
+      // Normalize into array formatting in case multi-files are accidentally passed
+      const filesArray = Array.isArray(rawFile) ? rawFile : [rawFile];
+
+      for (let i = 0; i < filesArray.length; i++) {
+        const file = filesArray[i];
         if (file && file.name) {
+          // 📁 Step A: Determine correct destination folder name parameters
+          // "EB_Bill_Copy" maps to its own folder, everything else sits directly in "site"
+          const targetFolderName = (fieldName === "EB_Bill_Copy") ? "last 6 month EBbill" : "site";
+          const targetFolderId = await getOrCreateLeadsSEFolder(dealId, targetFolderName);
+
+          // 💾 Step B: Build localized temp file path and enforce field name mapping rules
           const ext = path.extname(file.name) || '.jpg';
-          const tempPath = path.join(uploadDir, `temp_eb_${dealId}_${i}_${Date.now()}${ext}`);
+          // Name it exactly like the fieldName (add index if more than one file exists per field)
+          const customFileName = filesArray.length > 1 ? `${fieldName}_${i + 1}${ext}` : `${fieldName}${ext}`;
+          const tempPath = path.join(uploadDir, `temp_${dealId}_${fieldName}_${i}_${Date.now()}${ext}`);
+          
           temporaryFilesToClean.push(tempPath);
 
+          // Write file binary buffer to local disk space temporarily
           fs.writeFileSync(tempPath, Buffer.from(await file.arrayBuffer()));
-          console.log(`📸 Streaming EB Bill [${i + 1}/${ebFiles.length}]`);
+          console.log(`🎬 Streaming asset [${fieldName}] directly to Zoho WorkDrive Folder: [${targetFolderName}]`);
 
-          const url = await uploadToZohoWorkDrive(tempPath, file.name, targetEbFolderId);
-          uploadedEbUrls.push(url);
-        }
-      }
-    }
-
-    // -------------------------------------------------------------------------
-    // PROCESS CATEGORY 2: site photos
-    // -------------------------------------------------------------------------
-    const uploadedSiteUrls = [];
-    if (siteFiles.length > 0) {
-      const targetSiteFolderId = await getOrCreateLeadsSEFolder(dealId, "site photos");
-
-      for (let i = 0; i < siteFiles.length; i++) {
-        const file = siteFiles[i];
-        if (file && file.name) {
-          const ext = path.extname(file.name) || '.jpg';
-          const tempPath = path.join(uploadDir, `temp_site_${dealId}_${i}_${Date.now()}${ext}`);
-          temporaryFilesToClean.push(tempPath);
-
-          fs.writeFileSync(tempPath, Buffer.from(await file.arrayBuffer()));
-          console.log(`📸 Streaming Site Photo [${i + 1}/${siteFiles.length}]`);
-
-          const url = await uploadToZohoWorkDrive(tempPath, file.name, targetSiteFolderId);
-          uploadedSiteUrls.push(url);
+          // 📡 Step C: Pass the custom target filename directly into your upload utility helper
+          const url = await uploadToZohoWorkDrive(tempPath, customFileName, targetFolderId);
+          
+          if (!uploadedFileUrls[fieldName]) {
+            uploadedFileUrls[fieldName] = [];
+          }
+          uploadedFileUrls[fieldName].push(url);
         }
       }
     }
@@ -122,17 +123,17 @@ export const addForm = async (c) => {
         deal_id: dealId,
         mobileNumber,
         ...dataFields,
-        ebBillPhotos: uploadedEbUrls,  
-        sitePhotos: uploadedSiteUrls,  
+        // Stores all structured file map references cleanly right into your MongoDB document
+        uploadedMediaUrls: uploadedFileUrls,
         createdAt: new Date().toISOString()
       };
 
       await db.collection("forms").insertOne(finalDocument);
-      console.log(`✅ Form completely matched and stored to MongoDB Atlas!`);
+      console.log(`✅ Form components safely mapped and written to MongoDB Atlas!`);
 
       const zohoToken = await getZohoAccessToken(db);
 
-      // 🔍 Dynamic Decoupling Lookup: Source properties directly from the target templates workspace
+      // Lookup templates data logic safely
       const schemaConfig = await db.collection("templates").findOne({ id: "solarv1" });
       const registeredProperties = schemaConfig?.schema?.properties || {};
 
@@ -140,7 +141,7 @@ export const addForm = async (c) => {
         id: dealId
       };
 
-      // Extract every field parameter passed by surveyor, auto-casting types dynamically
+      // Extract field parameters passed by surveyor
       for (const [key, value] of Object.entries(dataFields)) {
         if (
           key !== 'id' && 
@@ -152,32 +153,31 @@ export const addForm = async (c) => {
           const normalizedValue = typeof value === 'string' ? value.trim().toLowerCase() : value;
           const fieldDefinition = registeredProperties[key] || {};
 
-          // 🖼️ Case A: Base64 data-url converter & background ZFS file attachment pipeline handler
-       if (fieldDefinition.format === 'data-url' && typeof value === 'string' && value.startsWith('data:image')) {
-  try {
-    const base64Data = value.replace(/^data:image\/\w+;base64,/, "");
-    const imageBuffer = Buffer.from(base64Data, 'base64');
-    
-    const tempPath = path.join(uploadDir, `temp_extracted_sig_${dealId}_${key}_${Date.now()}.png`);
-    fs.writeFileSync(tempPath, imageBuffer);
-    temporaryFilesToClean.push(tempPath);
+          // 🖼️ Case A: Base64 signature converter layout
+          if (fieldDefinition.format === 'data-url' && typeof value === 'string' && value.startsWith('data:image')) {
+            try {
+              const base64Data = value.replace(/^data:image\/\w+;base64,/, "");
+              const imageBuffer = Buffer.from(base64Data, 'base64');
+              
+              const tempPath = path.join(uploadDir, `temp_extracted_sig_${dealId}_${key}_${Date.now()}.png`);
+              fs.writeFileSync(tempPath, imageBuffer);
+              temporaryFilesToClean.push(tempPath);
 
-    console.log(`⚡ Uploading decoded signature binary to Zoho ZFS vault: ${key}`);
-    const zfsId = await uploadToZohoZFS(tempPath, `${key}.png`, zohoToken);
-    
-    if (zfsId) {
-      // Zoho v8 Image Upload custom layout fields expect an array tracking the uppercase File_Id__s property
-      dealUpdateFields[key] = [
-        {
-          File_Id__s: String(zfsId)
-        }
-      ];
-    }
-  } catch (err) {
-    console.error(`⚠️ Failed to process base64 signature layout field configuration for ${key}:`, err.message);
-  }
-}
-          // 🎛️ Case B: Dynamic Checkbox/Boolean Casting Engine via JSON-Schema Rules
+              console.log(`⚡ Uploading decoded signature binary to Zoho ZFS vault: ${key}`);
+              const zfsId = await uploadToZohoZFS(tempPath, `${key}.png`, zohoToken);
+              
+              if (zfsId) {
+                dealUpdateFields[key] = [
+                  {
+                    File_Id__s: String(zfsId)
+                  }
+                ];
+              }
+            } catch (err) {
+              console.error(`⚠️ Failed to process base64 signature layout field configuration for ${key}:`, err.message);
+            }
+          }
+          // 🎛️ Case B: Dynamic Boolean Casting Engine via JSON-Schema Rules
           else if (fieldDefinition.type === 'boolean') {
             dealUpdateFields[key] = (
               value === true ||
@@ -195,7 +195,7 @@ export const addForm = async (c) => {
             }
             dealUpdateFields[key] = digitsOnly;
           }
-          // 🛑 Case D: EXCLUSION FILTER: Keep Latitude/Longitude as pure strings for Zoho Single Line fields
+          // 🛑 Case D: EXCLUSION FILTER: Keep Latitude/Longitude as pure strings
           else if (key === 'Latitude' || key === 'Longitude') {
             dealUpdateFields[key] = String(value).trim();
           }
@@ -227,7 +227,7 @@ export const addForm = async (c) => {
       
       dealUpdateFields['Consumer_Number'] = parseInt(String(dealUpdateFields['Consumer_Number'] ?? '').trim(), 10) || 0;
 
-      console.log(`📡 Streaming integrated surveyor text and image layout live to Zoho Deals profile: ${dealId}`);
+      console.log(`📡 Streaming integrated surveyor data live to Zoho Deals profile: ${dealId}`);
 
       const zohoResponse = await fetch(`https://www.zohoapis.in/crm/v8/Deals/${dealId}`, {
         method: "PUT",
@@ -272,6 +272,7 @@ export const addForm = async (c) => {
     }
   }
 };
+
 
 export const updateForm = async (c) => {
   try {

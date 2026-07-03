@@ -8,13 +8,13 @@ import { getZohoAccessToken } from './zohoAuth.js';
 const MONGODB_URI = process.env.MONGODB_URI;
 
 // =========================================================================
-// 🎯 NEW REGIONAL ROOT FOLDER SETTINGS
+// 🎯 REGIONAL ROOT FOLDER SETTINGS
 // =========================================================================
 const ZOHO_ROOT_KERALA = "6a1v05bb43a52fc994c29a089b2200398c21a";
 const ZOHO_ROOT_TAMILNADU = "6a1v0ef07d0ed14ec49ada78a6812588bdf6c";
 
 // Keep your common global attendance root untouched as requested
-const ATTENDANCE_FOLDER_ID = "h4ezrdf40337e028543b8a114f69d176667ad";
+const ATTENDANCE_FOLDER_ID = "1dapl3d793070176e414aa88cc0a2652e819c";
 // =========================================================================
 
 
@@ -27,29 +27,28 @@ export const createZohoPublicDownloadUrl = async (db, resourceId) => {
 
     const zohoToken = await getZohoAccessToken(db);
 
+    // 🎯 Clean and strict Zoho WorkDrive link payload layout
     const payload = {
       data: {
-        attributes: {
-          name: "WhatsApp Sharing Link",
-          allow_download: true
-        },
         type: "links",
-        relationships: {
-          resource: {
-            data: {
-              id: resourceId,
-              type: "files"
-            }
-          }
+        attributes: {
+          resource_id: String(resourceId).trim(),
+          link_name: "WhatsApp Sharing Link",
+          allow_download: true,
+          request_user_data: false,
+          role_id: "34" // 🎯 CRITICAL: View/Download role permissions identifier for public sharing links
         }
       }
     };
+
+    console.log(`🔗 Requesting Zoho public link for file resource ID: ${resourceId}`);
 
     const response = await fetch("https://workdrive.zoho.in/api/v1/links", {
       method: "POST",
       headers: {
         "Authorization": `Zoho-oauthtoken ${zohoToken}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "application/vnd.api+json" // Required for strict JSON-API parsing by Zoho
       },
       body: JSON.stringify(payload)
     });
@@ -61,17 +60,24 @@ export const createZohoPublicDownloadUrl = async (db, resourceId) => {
       return null;
     }
 
+    // Capture the public URL returned cleanly by Zoho's response attributes object map
     const userUrl = result?.data?.attributes?.url;
-    if (!userUrl) return null;
+    if (!userUrl) {
+      console.error("⚠️ Zoho response did not contain a valid URL mapping.");
+      return null;
+    }
 
-    return `${userUrl}?directDownload=true`;
+    // Append the final parameter so WhatsApp's stream engine downloads the direct file raw binary stream
+    const directDownloadUrl = `${userUrl}?directDownload=true`;
+    console.log(`🚀 Final Customer Share Link configured: ${directDownloadUrl}`);
+    
+    return directDownloadUrl;
 
   } catch (error) {
     console.error("❌ Exception inside createZohoPublicDownloadUrl helper:", error.message);
     return null;
   }
 };
-
 
 export const uploadToZohoWorkDrive = async (filePath, fileName, targetFolderId) => {
   try {
@@ -97,7 +103,8 @@ export const uploadToZohoWorkDrive = async (filePath, fileName, targetFolderId) 
       });
 
       const resourceData = response.data?.data?.[0];
-      const fileId = resourceData?.id || resourceData?.attributes?.resource_id;
+      // Robust fallback extraction handling Zoho API's shifting payload properties keys
+      const fileId = resourceData?.id || resourceData?.attributes?.resource_id || resourceData?.attributes?.id;
       const workDriveUrl = resourceData?.attributes?.permalink || `https://workdrive.zoho.in/api/v1/download/${fileId}`;
 
       console.log(`✅ File synced to Zoho WorkDrive successfully: ${workDriveUrl}`);
@@ -354,7 +361,6 @@ export const getOrCreateLeadsSEFolder = async (dealId, subfolderType, state) => 
         } catch (err) {
           console.error("❌ Zoho API Refused Regional Deal Folder Creation!");
           if (err.response) {
-            // 🔥 Deep inspection of error payload
             console.error("🔹 HTTP Status Code:", err.response.status);
             console.error("🔹 Zoho API Raw Payload Details:", JSON.stringify(err.response.data, null, 2));
           } else {
@@ -399,7 +405,6 @@ export const getOrCreateLeadsSEFolder = async (dealId, subfolderType, state) => 
       } catch (err) {
         console.error(`❌ Zoho API Refused Subfolder [${subfolderType}] Creation!`);
         if (err.response) {
-          // 🔥 Deep inspection of error payload
           console.error("🔹 HTTP Status Code:", err.response.status);
           console.error("🔹 Zoho API Raw Payload Details:", JSON.stringify(err.response.data, null, 2));
         } else {

@@ -3,8 +3,46 @@ import { withDatabase } from '../utils/config.js';
 import { getSolarmanDataCore } from './solarmanController.js'; 
 import admin from 'firebase-admin';
 
+/**
+ * ⏰ Helper: Calculates the upcoming Sunday at 8:00 PM Local Time
+ */
+const getNextSunday8PM = () => {
+  const now = new Date();
+  const resultDate = new Date(now);
+
+  const currentDay = now.getDay();
+  const daysUntilSunday = (7 - currentDay) % 7;
+  
+  resultDate.setDate(now.getDate() + daysUntilSunday);
+  resultDate.setHours(20, 0, 0, 0);
+
+  // If it's already Sunday past 8:00 PM, move to the next week's Sunday
+  if (resultDate <= now) {
+    resultDate.setDate(resultDate.getDate() + 7);
+  }
+
+  return resultDate;
+};
+
+/**
+ * 📅 Helper: Calculates the last day of the current or next month at 8:00 PM Local Time
+ */
+const getNextMonthEnd8PM = () => {
+  const now = new Date();
+  
+  // Find the last day of the current month
+  const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 20, 0, 0, 0);
+
+  // If we have already passed the 8 PM mark on the last day of this month, target the next month's end
+  if (currentMonthEnd <= now) {
+    return new Date(now.getFullYear(), now.getMonth() + 2, 0, 20, 0, 0, 0);
+  }
+
+  return currentMonthEnd;
+};
+
 export const startQueueRunner = () => {
-  console.log("⏳ Mongo Queue Runner Started (30-Second Solar Report Engine)...");
+  console.log("⏳ Mongo Queue Runner Started (Production Calendar Schedule Engine)...");
 
   setInterval(async () => {
     try {
@@ -15,7 +53,7 @@ export const startQueueRunner = () => {
 
       await withDatabase(mongoUri, async (db) => {
         
-        // 🔍 MULTI-TASK LOOKUP: Find pending solar report summaries ready to run right now
+        // 🔍 Find pending solar report summaries ready to run right now
         const job = await db.collection("jobs_queue").findOneAndUpdate(
           {
             status: "pending",
@@ -33,7 +71,7 @@ export const startQueueRunner = () => {
 
         console.log(`🚀 Found active task to run: [${job.taskType}] (ID: ${job._id})`);
 
-        // 🔀 TASK ROUTER (Only handling Solar Generation Summaries now)
+        // 🔀 TASK ROUTER
         switch (job.taskType) {
           case "WEEKLY_MASTER_SOLAR_SUMMARY":
             await processAllCustomersWeeklyJobs(db, job);
@@ -55,18 +93,17 @@ export const startQueueRunner = () => {
     } catch (error) {
       console.error("❌ Error in Master Queue Runner loop:", error);
     }
-  }, 30000);
+  }, 30000); // Polls database state safely every 30 seconds
 };
 
 export const processAllCustomersWeeklyJobs = async (db, masterJob) => {
   try {
-    // ⚡ FIX: Added "UserInfo.role": "user" to isolate customer devices exclusively
     const users = await db.collection("userDetails").find({ 
       "UserInfo.role": "user",
       "PlatformInfo.devices.0": { $exists: true } 
     }).toArray();
     
-    console.log(`📋 Found ${users.length} customer users with registered devices in local userDetails collection.`);
+    console.log(`📋 Found ${users.length} customer users with registered devices for Weekly Report.`);
 
     const today = new Date();
     const currentDay = today.getDay();
@@ -91,9 +128,7 @@ export const processAllCustomersWeeklyJobs = async (db, masterJob) => {
           .filter(token => token && token.trim().length > 0);
       }
 
-      if (tokensToBroadcast.length === 0) {
-        continue;
-      }
+      if (tokensToBroadcast.length === 0) continue;
 
       let totalUserWeeklyUnits = 0;
       let processedStationsCount = 0;
@@ -121,7 +156,7 @@ export const processAllCustomersWeeklyJobs = async (db, masterJob) => {
           stationBreakdownText += `• ${stationCustomName}: ${stationUnits.toFixed(2)} Units\n`;
 
         } catch (stationError) {
-          console.error(`   ⚠️ Failed to fetch data for Station ${stationId}:`, stationError.message);
+          console.error(`   ⚠️ Failed to fetch weekly data for Station ${stationId}:`, stationError.message);
         }
       }
 
@@ -173,23 +208,23 @@ export const processAllCustomersWeeklyJobs = async (db, masterJob) => {
             }
           }
         } catch (multicastErr) {
-          console.error(`❌ Complete breakdown executing multi-device send operation:`, multicastErr.message);
+          console.error(`❌ Breakdown executing multi-device send operation:`, multicastErr.message);
         }
       }
     }
 
-    const nextRunTime = new Date();
-    nextRunTime.setSeconds(nextRunTime.getSeconds() + 30); 
+    // 🎯 CALENDAR UPDATE: Calculate exact upcoming Sunday at 8 PM
+    const nextRunTime = getNextSunday8PM(); 
 
     await db.collection("jobs_queue").updateOne(
       { _id: masterJob._id },
       { $set: { status: "pending", runAt: nextRunTime, lockedAt: null, lastRunAt: new Date() } }
     );
 
-    console.log(`✅ Weekly Master Loop finished. NEXT TICK: ${nextRunTime.toLocaleTimeString()}`);
+    console.log(`✅ Weekly Master Loop finished. RESCHEDULED TARGET: ${nextRunTime.toString()}`);
 
   } catch (error) {
-    console.error("❌ Critical breakdown in Master Loop processing:", error.message);
+    console.error("❌ Critical breakdown in Weekly Master Loop processing:", error.message);
     await db.collection("jobs_queue").updateOne(
       { _id: masterJob._id },
       { $set: { status: "pending", lockedAt: null } }
@@ -199,13 +234,12 @@ export const processAllCustomersWeeklyJobs = async (db, masterJob) => {
 
 export const processAllCustomersMonthlyJobs = async (db, masterJob) => {
   try {
-    // ⚡ FIX: Added "UserInfo.role": "user" to isolate customer devices exclusively
     const users = await db.collection("userDetails").find({ 
       "UserInfo.role": "user",
       "PlatformInfo.devices.0": { $exists: true } 
     }).toArray();
     
-    console.log(`📋 Found ${users.length} customer users with registered devices in local userDetails collection.`);
+    console.log(`📋 Found ${users.length} customer users with registered devices for Monthly Summary.`);
 
     const today = new Date();
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -224,9 +258,7 @@ export const processAllCustomersMonthlyJobs = async (db, masterJob) => {
           .filter(token => token && token.trim().length > 0);
       }
 
-      if (tokensToBroadcast.length === 0) {
-        continue;
-      }
+      if (tokensToBroadcast.length === 0) continue;
 
       let totalUserMonthlyUnits = 0;
       let processedStationsCount = 0;
@@ -247,7 +279,7 @@ export const processAllCustomersMonthlyJobs = async (db, masterJob) => {
                 stationUnits += Number(item.generationValue);
               }
             }); 
-          }                                   
+          }                     
 
           totalUserMonthlyUnits += stationUnits;
           processedStationsCount++;
@@ -306,20 +338,20 @@ export const processAllCustomersMonthlyJobs = async (db, masterJob) => {
             }
           }
         } catch (multicastErr) {
-          console.error(`❌ Complete breakdown executing multi-device monthly operation:`, multicastErr.message);
+          console.error(`❌ Breakdown executing multi-device monthly operation:`, multicastErr.message);
         }
       }
     }
 
-    const nextRunTime = new Date();
-    nextRunTime.setSeconds(nextRunTime.getSeconds() + 30); 
+    // 🎯 CALENDAR UPDATE: Calculate exact month-end date at 8 PM
+    const nextRunTime = getNextMonthEnd8PM(); 
 
     await db.collection("jobs_queue").updateOne(
       { _id: masterJob._id },
       { $set: { status: "pending", runAt: nextRunTime, lockedAt: null, lastRunAt: new Date() } }
     );
 
-    console.log(`✅ Monthly Master Loop finished. NEXT TICK: ${nextRunTime.toLocaleTimeString()}`);
+    console.log(`✅ Monthly Master Loop finished. RESCHEDULED TARGET: ${nextRunTime.toString()}`);
 
   } catch (error) {
     console.error("❌ Critical breakdown in Monthly Master Loop processing:", error.message);

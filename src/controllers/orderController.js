@@ -723,7 +723,7 @@ export const zohoWorkflowAssignment = async (c) => {
 
     const id = payload.deal_id || payload.id;
     const name = payload.deal_name || payload.name;
-    const mobile = payload.Mobile || payload.Phone || payload.phone || payload.mobile || null;
+    const mobile = payload.mobile || null;
     const whatsappNo = payload.whatsappNo || payload.customer_whatsapp || null;
     const email = payload.Email || payload.customer_email || null;
     const city = payload.city || null;
