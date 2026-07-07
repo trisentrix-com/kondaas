@@ -615,7 +615,6 @@ export const assignDealToSurveyor = async (c) => {
         latitude: latitude || null,
         longitude: longitude || null,
         comment: comment || "",
-        status: status || "unaccepted",
         siteSurveyStatus: "notassigned",
         date: date || null,
         assignedTo: surveyorNumber,
@@ -747,7 +746,6 @@ export const zohoWorkflowAssignment = async (c) => {
     const referred_by = payload.referred_by || null;
     const Site_Survey_Req_Date_Time = payload.Site_Survey_Req_Date_Time || null;
     const comment = payload.comment || "Assigned via Zoho CRM Automated Field Update";
-    const status = payload.status || "unaccepted";
     const kilovolt = payload.kilovolt || null;
     const date = payload.date || null;
 

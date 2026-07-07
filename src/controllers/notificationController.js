@@ -72,6 +72,63 @@ const processWhatsAppNotification = async (notificationId) => {
   }
 };
 
+export const saveWhatsAppRating = async (c) => {
+  try {
+    // 1. Parse incoming body data via Hono's native parser
+    const body = await c.req.json();
+    const { mobile, rating, feedback } = body;
+
+    // 2. Structural data validation check
+    if (!mobile || !rating) {
+      return c.json({
+        success: false,
+        message: "Missing required fields: mobile and rating are mandatory.",
+      }, 400);
+    }
+
+    
+    return await withDatabase(MONGODB_URI, async (db) => {
+      
+      
+      const updatedDeal = await db.collection('deals').findOneAndUpdate(
+        {
+          mobile: mobile.trim(),
+          siteSurveyStatus: "completed" // 🎯 Safety guardrail matching your business logic
+        },
+        {
+          $set: {
+            ratingScore: String(rating).trim(),
+            ratingComment: feedback ? String(feedback).trim() : "",
+            ratingReceivedAt: new Date()
+          }
+        },
+        { returnDocument: 'after' } // Crucial to grab the row parameters back out of the query
+      );
+
+      
+      if (!updatedDeal) {
+        return c.json({
+          success: false,
+          message: "No active completed survey record found matching this mobile number.",
+        }, 404);
+      }
+
+      
+      return c.json({
+        success: true,
+        message: "Rating and feedback successfully saved in database.",
+        deal_id: updatedDeal.deal_id
+      }, 200);
+    });
+
+  } catch (error) {
+    console.error("❌ Error inside saveWhatsAppRating Hono controller:", error.message);
+    return c.json({
+      success: false,
+      message: "Internal Server Error while saving customer feedback.",
+    }, 500);
+  }
+};
 
 export const triggerScenarioNotification = async (c) => {
   try {

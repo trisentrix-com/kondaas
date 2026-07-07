@@ -1,5 +1,5 @@
 node_modules
-npm-debug.log
-.wrangler
+.cache
 .git
 .env
+npm-debug.log

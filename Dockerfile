@@ -6,11 +6,14 @@ WORKDIR /app
 
 COPY package*.json ./
 
-# 🎯 Tell Puppeteer to download the browser inside /app instead of the root folder
+# Pinned cache directory for Puppeteer's Chrome build inside the project
 ENV PUPPETEER_CACHE_DIR=/app/.cache
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 
-RUN npm ci
+# Clean, production-only dependency install
+RUN npm ci --only=production
+
+# Copy the rest of your application source code
 COPY . .
 
 
@@ -23,7 +26,7 @@ WORKDIR /app
 # Ensure Puppeteer knows exactly where to look for the copied browser build
 ENV PUPPETEER_CACHE_DIR=/app/.cache
 
-# Install the baseline system dependencies needed for headless browsers
+# Install the absolute minimal baseline dependencies for headless Chrome
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
@@ -46,8 +49,13 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy everything (including the downloaded browser in /app/.cache) from Stage 1
-COPY --from=builder /app /app
+# 🔥 OPTIMIZATION: Copy ONLY your actual source code and node_modules.
+# This leaves behind the massive npm cache folder sitting in Stage 1!
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.cache ./.cache
+COPY --from=builder /app/src ./src
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/index.js ./
 
 # Open Port 3002
 EXPOSE 3002
