@@ -49,8 +49,7 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
-# 🔥 OPTIMIZATION: Copy ONLY your actual source code and node_modules.
-# This leaves behind the massive npm cache folder sitting in Stage 1!
+
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.cache ./.cache
 COPY --from=builder /app/src ./src

@@ -86,10 +86,9 @@ export const saveWhatsAppRating = async (c) => {
       }, 400);
     }
 
-    
     return await withDatabase(MONGODB_URI, async (db) => {
       
-      
+      // 3. Update MongoDB first (keeping data types as simple strings)
       const updatedDeal = await db.collection('deals').findOneAndUpdate(
         {
           mobile: mobile.trim(),
@@ -97,15 +96,15 @@ export const saveWhatsAppRating = async (c) => {
         },
         {
           $set: {
-            ratingScore: String(rating).trim(),
-            ratingComment: feedback ? String(feedback).trim() : "",
+            rating: String(rating).trim(),
+            feedback: feedback ? String(feedback).trim() : "",
             ratingReceivedAt: new Date()
           }
         },
-        { returnDocument: 'after' } // Crucial to grab the row parameters back out of the query
+        { returnDocument: 'after' } // Crucial to grab the row parameters (deal_id) out of the query
       );
 
-      
+      // 4. Handle if no matching record is found in your database
       if (!updatedDeal) {
         return c.json({
           success: false,
@@ -113,11 +112,67 @@ export const saveWhatsAppRating = async (c) => {
         }, 404);
       }
 
-      
+      // 💥 ZOHO CRM INTEGRATION LAYER 💥
+      const zohoDealId = updatedDeal.deal_id;
+
+      if (!zohoDealId) {
+        console.warn(`⚠️ saved locally, but skipping Zoho update because deal_id is missing for mobile: ${mobile}`);
+        return c.json({
+          success: true,
+          message: "Rating saved locally, but no Zoho deal_id linked to this record.",
+        }, 200);
+      }
+
+      try {
+        // 🔐 Grab active authorization credentials dynamically out of RAM / config collection
+        const zohoToken = await getZohoAccessToken(db);
+
+        console.log(`📡 Syncing Rating to Zoho CRM for Deal ID: ${zohoDealId}...`);
+
+        // 📝 Construct payload matching Zoho CRM API requirements (data array wrapper)
+        const zohoPayload = {
+          data: [
+            {
+              id: zohoDealId,
+              Rating: String(rating).trim(), // 🏷️ Updating the Zoho field you specified
+              Site_Survey_Remarks: feedback ? String(feedback).trim() : "" // 💬 Maps comments to Description field
+            }
+          ]
+        };
+
+        const zohoResponse = await fetch(`https://www.zohoapis.in/crm/v8/Deals`, {
+          method: "PUT", 
+          headers: {
+            "Authorization": `Zoho-oauthtoken ${zohoToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(zohoPayload)
+        });
+
+        if (!zohoResponse.ok) {
+          const errorText = await zohoResponse.text();
+          console.error(`❌ Zoho API rating sync failed for Deal ${zohoDealId}:`, errorText);
+          // We return 200 because the local DB update succeeded, but note the sync error
+          return c.json({
+            success: true,
+            message: "Rating saved locally, but failed to sync with Zoho CRM layout engine.",
+            deal_id: zohoDealId
+          }, 200);
+        }
+
+        const zohoResult = await zohoResponse.json();
+        console.log(`✅ Zoho CRM Sync Successful for Deal ${zohoDealId}:`, JSON.stringify(zohoResult?.data?.[0]?.status));
+
+      } catch (zohoError) {
+        console.error("❌ Exception inside Zoho CRM update transaction block:", zohoError.message);
+        // Fail-safe exit so your main webhook doesn't throw a 500 if Zoho has an outage
+      }
+
+      // 5. Final Success Response
       return c.json({
         success: true,
-        message: "Rating and feedback successfully saved in database.",
-        deal_id: updatedDeal.deal_id
+        message: "Rating and feedback successfully saved in database and synchronized with Zoho CRM.",
+        deal_id: zohoDealId
       }, 200);
     });
 
