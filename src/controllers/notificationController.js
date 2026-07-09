@@ -24,21 +24,27 @@ const processWhatsAppNotification = async (notificationId) => {
 
       const type = notification.contentType;
       const formattedNumber = `91${notification.to}`;
-      // contentString contains the Cloud URL for PDFs
       const contentString = notification.content.buffer.toString('utf8');
 
-      let action = (type === "text") ? "sendText/petchi" : "sendMedia/petchi";
+      // 🔀 DYNAMIC ACTION ROUTER
+      let action;
       let payload = { number: formattedNumber };
 
       if (type === "text") {
+        action = "sendText/petchirajan";
         payload.text = contentString;
+      } else if (type === "poll") {
+        action = "sendPoll/petchirajan";
+        payload.name = contentString; // Message title of the Poll
+        payload.selectableCount = 1;
+        payload.values = ["1", "2", "3", "4", "5"]; // Options array
       } else {
+        action = "sendMedia/petchirajan";
         payload = {
           ...payload,
           mediatype: "document",
           media: contentString,
           fileName: "Kondaas_Invoice.pdf",
-          // FIX: Prioritize notification.caption from the DB!
           caption: notification.caption || "Thank you for choosing Kondaas!"
         };
       }
@@ -54,9 +60,7 @@ const processWhatsAppNotification = async (notificationId) => {
           { _id: notificationId },
           { $set: { status: "completed", completedAt: new Date() } }
         );
-
       } else {
-        // Log the error body to see why the API rejected it (helps with 500 errors)
         const errorData = await response.text();
         throw new Error(`API Error ${response.status}: ${errorData}`);
       }
@@ -79,29 +83,39 @@ export const saveWhatsAppRating = async (c) => {
     const { mobile, rating, feedback } = body;
 
     // 2. Structural data validation check
-    if (!mobile || !rating) {
+    // Mobile is mandatory, and we must receive at least a rating OR feedback to do an update
+    if (!mobile || (rating === undefined && feedback === undefined)) {
       return c.json({
         success: false,
-        message: "Missing required fields: mobile and rating are mandatory.",
+        message: "Missing required fields: mobile and either rating or feedback are mandatory.",
       }, 400);
     }
 
     return await withDatabase(MONGODB_URI, async (db) => {
       
-      // 3. Update MongoDB first (keeping data types as simple strings)
+      // 🛠️ DYNAMIC UPDATE PAYLOAD: Only update what is provided to prevent overwriting existing data
+      const updateFields = {
+        ratingReceivedAt: new Date()
+      };
+
+      if (rating !== undefined && rating !== null) {
+        updateFields.rating = String(rating).trim();
+      }
+      
+      if (feedback !== undefined && feedback !== null) {
+        updateFields.feedback = String(feedback).trim();
+      }
+
+      // 3. Update MongoDB (using $set with our dynamic fields object)
       const updatedDeal = await db.collection('deals').findOneAndUpdate(
         {
           mobile: mobile.trim(),
           siteSurveyStatus: "completed" // 🎯 Safety guardrail matching your business logic
         },
         {
-          $set: {
-            rating: String(rating).trim(),
-            feedback: feedback ? String(feedback).trim() : "",
-            ratingReceivedAt: new Date()
-          }
+          $set: updateFields
         },
-        { returnDocument: 'after' } // Crucial to grab the row parameters (deal_id) out of the query
+        { returnDocument: 'after' } // Grab the latest fields so we can send the complete state to Zoho
       );
 
       // 4. Handle if no matching record is found in your database
@@ -127,15 +141,16 @@ export const saveWhatsAppRating = async (c) => {
         // 🔐 Grab active authorization credentials dynamically out of RAM / config collection
         const zohoToken = await getZohoAccessToken(db);
 
-        console.log(`📡 Syncing Rating to Zoho CRM for Deal ID: ${zohoDealId}...`);
+        console.log(`📡 Syncing fields to Zoho CRM for Deal ID: ${zohoDealId}...`);
 
-        // 📝 Construct payload matching Zoho CRM API requirements (data array wrapper)
+        // 📝 Pull the combined current state directly from the updated database object 
+        // This ensures Zoho always gets both fields, even if they arrived across separate requests!
         const zohoPayload = {
           data: [
             {
               id: zohoDealId,
-              Rating: String(rating).trim(), // 🏷️ Updating the Zoho field you specified
-              Site_Survey_Remarks: feedback ? String(feedback).trim() : "" // 💬 Maps comments to Description field
+              Rating: updatedDeal.rating || "", 
+              Site_Survey_Remarks: updatedDeal.feedback || "" 
             }
           ]
         };
@@ -152,10 +167,9 @@ export const saveWhatsAppRating = async (c) => {
         if (!zohoResponse.ok) {
           const errorText = await zohoResponse.text();
           console.error(`❌ Zoho API rating sync failed for Deal ${zohoDealId}:`, errorText);
-          // We return 200 because the local DB update succeeded, but note the sync error
           return c.json({
             success: true,
-            message: "Rating saved locally, but failed to sync with Zoho CRM layout engine.",
+            message: "Rating saved locally, but failed to sync with Zoho CRM.",
             deal_id: zohoDealId
           }, 200);
         }
@@ -165,13 +179,12 @@ export const saveWhatsAppRating = async (c) => {
 
       } catch (zohoError) {
         console.error("❌ Exception inside Zoho CRM update transaction block:", zohoError.message);
-        // Fail-safe exit so your main webhook doesn't throw a 500 if Zoho has an outage
       }
 
       // 5. Final Success Response
       return c.json({
         success: true,
-        message: "Rating and feedback successfully saved in database and synchronized with Zoho CRM.",
+        message: "Rating and feedback successfully processed and synchronized with Zoho CRM.",
         deal_id: zohoDealId
       }, 200);
     });
@@ -187,10 +200,8 @@ export const saveWhatsAppRating = async (c) => {
 
 export const triggerScenarioNotification = async (c) => {
   try {
-    // 🎯 ADDED: 'state' is now pulled directly from the incoming mobile payload
     const { deal_id, surveyorNumber, customerMobile, name, scenarioType, eta, mapsUrl, state } = await c.req.json();
 
-    // 🧼 Clean and strip phone formatting symbols
     let cleanedCustomerMobile = customerMobile ? String(customerMobile).replace(/\D/g, '') : null;
     if (cleanedCustomerMobile && cleanedCustomerMobile.length === 12 && cleanedCustomerMobile.startsWith('91')) {
       cleanedCustomerMobile = cleanedCustomerMobile.substring(2);
@@ -219,8 +230,22 @@ export const triggerScenarioNotification = async (c) => {
       });
       processWhatsAppNotification(textResult.insertedId).catch(err => console.error(err));
 
-      // --- STEP 2: SCENARIO 4 HEAVY BACKGROUND COMPILATION TREE ---
-      if (scenarioType === 4) {
+      // --- STEP 2: SCENARIO 4 HEAVY BACKGROUND TREE & POLL EXECUTION ---
+      if (Number(scenarioType) === 4) {
+        
+        // 📊 NEW: Fire interactive satisfaction rating poll instantly!
+        const pollResult = await db.collection("notifications").insertOne({
+          from: "Kondaas_System",
+          to: whatsappTo,
+          mode: "whatsapp",
+          content: new Binary(Buffer.from("Rate our service", 'utf8')),
+          contentType: "poll",
+          status: "pending",
+          createdAt: new Date()
+        });
+        processWhatsAppNotification(pollResult.insertedId).catch(err => console.error(err));
+
+        // Background PDF & Sync compilation block remains isolated here
         (async () => {
           try {
             if (!deal_id) {
@@ -240,9 +265,6 @@ export const triggerScenarioNotification = async (c) => {
             formData.Report_Number = `KON-SRV-${new Date().getFullYear()}-${String(deal_id).slice(-4).toUpperCase()}`;
             formData.Site_Survey_Requested_Date_Time = new Date().toISOString();
 
-            // -------------------------------------------------------------
-            // 📑 PART A: GENERATE & UPLOAD THE SITE SURVEY TECHNICAL REPORT
-            // -------------------------------------------------------------
             console.log("🛠️ Compiling Technical Survey Report PDF...");
             const surveyFileName = `Survey_Report_${deal_id}.pdf`;
             const surveyFilePath = path.join(process.cwd(), surveyFileName);
@@ -250,7 +272,6 @@ export const triggerScenarioNotification = async (c) => {
             const surveyHtml = getSurveyReportTemplate(formData);
             await generatePDF(surveyHtml, surveyFilePath);
 
-            // 🎯 FUTURE CHANGE: Pass the 'state' parameter into folder routing here
             console.log(`🔄 Resolving Zoho WorkDrive "Survey" Folder for Deal ID [${deal_id}] in [${state || 'Default'}]...`);
             const targetSurveyFolderId = await getOrCreateLeadsSEFolder(deal_id, "Survey", state);
 
@@ -261,9 +282,6 @@ export const triggerScenarioNotification = async (c) => {
               if (err) console.error("❌ Error deleting local temporary survey PDF:", err.message);
             });
 
-            // ----------------------------------------------------------------------
-            // 🎯 LINK ATTACHMENT: ATTACH WORKDRIVE URL TO ZOHO CRM DEALS FIELD
-            // ----------------------------------------------------------------------
             try {
               console.log(`📡 Attaching survey report link to Zoho CRM Deals for ID: ${deal_id}`);
               const zohoToken = await getZohoAccessToken(db);
@@ -292,9 +310,6 @@ export const triggerScenarioNotification = async (c) => {
               console.error("⚠️ Non-blocking warning: CRM link attachment dropped:", crmErr.message);
             }
 
-            // -------------------------------------------------------------
-            // 📑 PART C: GENERATE & UPLOAD THE COMMERCIAL INVOICE
-            // -------------------------------------------------------------
             console.log("💰 Compiling Commercial Invoice PDF...");
             const invoiceFileName = `${deal_id}.pdf`;
             const invoiceFilePath = path.join(process.cwd(), invoiceFileName);
@@ -302,7 +317,6 @@ export const triggerScenarioNotification = async (c) => {
             const invoiceHtml = getInvoiceTemplate(formData);
             await generatePDF(invoiceHtml, invoiceFilePath);
 
-            // 🎯 FUTURE CHANGE: Pass the 'state' parameter into folder routing here too
             console.log(`🔄 Resolving Zoho WorkDrive "Invoice" Folder for Deal ID [${deal_id}] in [${state || 'Default'}]...`);
             const targetInvoiceFolderId = await getOrCreateLeadsSEFolder(deal_id, "Invoice", state);
 
@@ -319,9 +333,6 @@ export const triggerScenarioNotification = async (c) => {
               if (err) console.error("❌ Error deleting local temporary invoice PDF:", err.message);
             });
 
-            // -------------------------------------------------------------
-            // 📦 PART D: QUEUE INVOICE WHATSAPP DELIVERY TO CLIENT
-            // -------------------------------------------------------------
             const pdfResult = await db.collection("notifications").insertOne({
               from: "Kondaas_System",
               to: whatsappTo,
