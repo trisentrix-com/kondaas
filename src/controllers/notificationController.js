@@ -254,7 +254,7 @@ export const triggerScenarioNotification = async (c) => {
             }
 
             console.log(`📄 Fetching forms record for clean mobile: ${cleanedCustomerMobile}...`);
-            const formData = await db.collection("forms").findOne({ mobileNumber: cleanedCustomerMobile });
+            const formData = await db.collection("forms").findOne({ mobileNumber: cleanedCustomerMobile || customerMobile  });
 
             if (!formData) {
               console.error(`❌ Document Generation Cancelled: No form entry found for mobile: ${cleanedCustomerMobile}`);

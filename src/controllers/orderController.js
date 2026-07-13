@@ -390,7 +390,6 @@ export const getOrders = async (c) => {
 
           comment: deal.Description || "",
           siteSurveyStatus: cleanedSurveyStatus || "accepted",
-          kilovolt: deal.Wattage_Required || null,
 
           // Extract the profile creation timestamp cleanly
           date: deal.Created_Time || null
@@ -744,8 +743,19 @@ export const zohoWorkflowAssignment = async (c) => {
     const referred_by = payload.referred_by || null;
     const Site_Survey_Req_Date_Time = payload.Site_Survey_Req_Date_Time || null;
     const comment = payload.comment || "Assigned via Zoho CRM Automated Field Update";
-    const kilovolt = payload.kilovolt || null;
-    const date = payload.date || null;
+    
+    
+    const productType=payload.Product_Type || null;
+    const orderType=payload.Order_Type || null;
+    const projectType=payload.Project_Type || null;
+    const projectModel=payload.Project_Model || null;
+    const inverterConnectionType=payload.Inverter_Connection_Type || null;
+    const inverterCapacity=payload.Inverter_Capacity || null;
+    const solarPanel_Model=payload.Solar_Panel_Model || null;
+    const solarPanelBrand =payload.Solar_Panel_Brand || null;
+    const noOfPanels=payload.No_of_Panels || null;
+    const roofType=payload.Roof_Type || null;
+
 
     const siteEngineerContact = payload.site_engineer_contact || payload.Site_Engineer_Contact;
 
@@ -789,8 +799,6 @@ export const zohoWorkflowAssignment = async (c) => {
         referred_by: referred_by,
         Site_Survey_Req_Date_Time: Site_Survey_Req_Date_Time,
         siteSurveyStatus: "notassigned",
-        kilovolt: kilovolt,
-        date: date,
         assignedTo: surveyorNumber,
         assignedAt: new Date().toISOString(),
       };
@@ -829,7 +837,7 @@ export const zohoWorkflowAssignment = async (c) => {
       }
 
       if (surveyorTokens.length > 0) {
-        const structuredBody = `👤 Name : ${name || 'N/A'}\n📍 Address : ${address || 'N/A'}\n⚡ Kilovolts : ${kilovolt || 'N/A'}`;
+        const structuredBody = `👤 Name : ${name || 'N/A'}\n📍 Address : ${address || 'N/A'}}`;
 
         const message = {
           notification: {
@@ -867,7 +875,6 @@ export const zohoWorkflowAssignment = async (c) => {
             customer_name: name || "",
             customer_mobile: cleanMobile || "",      // Sent clean to frontend
             customer_address: address || "",
-            kilovolt: String(kilovolt || ""),
             leadId: String(id),
             customerMobile: cleanMobile || "",      // Sent clean to frontend
             customerName: name || "",
