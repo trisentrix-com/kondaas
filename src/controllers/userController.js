@@ -79,7 +79,9 @@ export const addForm = async (c) => {
         if (file && file.name) {
           // 📁 Step A: Determine correct destination folder name parameters dynamically
           const targetFolderName = (fieldName === "EB_Bill_Copy") ? "last 6 month EBbill" : "site";
-          const targetFolderId = await getOrCreateLeadsSEFolder(dealId, targetFolderName);
+          
+          // 🎯 FIXED: Now tracking the third state argument dynamically for regional folder synchronization!
+          const targetFolderId = await getOrCreateLeadsSEFolder(dealId, targetFolderName, dataFields.state);
 
           // 💾 Step B: Build localized temp file path and enforce clean field-based file naming rules
           const ext = path.extname(file.name) || '.jpg';
@@ -90,7 +92,7 @@ export const addForm = async (c) => {
 
           // Write file binary buffer to local disk space temporarily
           fs.writeFileSync(tempPath, Buffer.from(await file.arrayBuffer()));
-          console.log(`🎬 Streaming dynamic asset [${fieldName}] directly to Zoho WorkDrive Folder: [${targetFolderName}]`);
+          console.log(`🎬 Streaming dynamic asset [${fieldName}] directly to Zoho WorkDrive Folder: [${targetFolderName}] for state [${dataFields.state || 'N/A'}]`);
 
           // 📡 Step C: Pass the custom target filename directly into your upload utility helper
           const url = await uploadToZohoWorkDrive(tempPath, customFileName, targetFolderId);

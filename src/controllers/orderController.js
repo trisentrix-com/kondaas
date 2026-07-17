@@ -819,8 +819,9 @@ export const zohoWorkflowAssignment = async (c) => {
         assignedTo: surveyorNumber,
         assignedAt: new Date().toISOString(),
         leadSource: leadSource,
+        state:state,
         
-        // 🎯 Storing the beautifully cleaned and separated strings:
+        
         CreatedBy: CreatedBy,
         District: District,
 
